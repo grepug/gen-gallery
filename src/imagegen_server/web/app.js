@@ -4,8 +4,8 @@ const PREVIEW_MIN_ZOOM = 1;
 const PREVIEW_MAX_ZOOM = 5.5;
 const PREVIEW_WHEEL_ZOOM_SENSITIVITY = 0.0022;
 const PREVIEW_PINCH_ZOOM_SENSITIVITY = 0.0036;
-const PREVIEW_SAFARI_PINCH_DPI_WEIGHT = 0.24;
-const PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER = 1.08;
+const PREVIEW_SAFARI_PINCH_DPI_WEIGHT = 0.4;
+const PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER = 1.12;
 const PREVIEW_DEFAULT_DPI_WEIGHT = 0.12;
 const PREVIEW_SAFARI_SCROLL_DAMPING = 0.9;
 const PREVIEW_SAFARI_SCROLL_BREAKPOINT = 28;
@@ -68,7 +68,9 @@ const IS_SAFARI =
   typeof navigator !== "undefined" &&
   /Safari/i.test(navigator.userAgent) &&
   /Apple/i.test(navigator.vendor || "") &&
-  !/CriOS|Chrome|Chromium|EdgiOS|Edg|Firefox|FxiOS|OPR|OPT/i.test(navigator.userAgent);
+  !/CriOS|Chrome|Chromium|EdgiOS|Edg|Firefox|FxiOS|OPR|OPT/i.test(
+    navigator.userAgent,
+  );
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -91,7 +93,8 @@ function statusClass(status) {
 }
 
 function outputFile(job) {
-  if (job.output_files && job.output_files.length > 0) return job.output_files[0];
+  if (job.output_files && job.output_files.length > 0)
+    return job.output_files[0];
   return null;
 }
 
@@ -133,7 +136,10 @@ function resetPreviewViewport() {
 
 function setImmersiveChromeVisible(visible) {
   state.immersiveChromeVisible = visible;
-  els.viewerModal.classList.toggle("immersive-ui-hidden", state.immersiveMode && !visible);
+  els.viewerModal.classList.toggle(
+    "immersive-ui-hidden",
+    state.immersiveMode && !visible,
+  );
 }
 
 function scheduleImmersiveChromeHide() {
@@ -315,7 +321,10 @@ function renderMeta(selectedJob) {
   const items = [
     ["Job ID", selectedJob.id],
     ["Key", selectedJob.assigned_key_name || "—"],
-    ["Attempts", `${selectedJob.attempt_count} / ${selectedJob.max_retries + 1}`],
+    [
+      "Attempts",
+      `${selectedJob.attempt_count} / ${selectedJob.max_retries + 1}`,
+    ],
     ["Created", formatTimestamp(selectedJob.created_at)],
     ["Updated", formatTimestamp(selectedJob.updated_at)],
     ["Finished", formatTimestamp(selectedJob.finished_at)],
@@ -336,10 +345,14 @@ function renderMeta(selectedJob) {
 function renderPrompt(selectedJob) {
   const prompt = selectedJob.prompt || "No prompt";
   const longPrompt = prompt.length > 280;
-  els.detailPromptPreview.textContent = longPrompt ? promptSnippet(prompt) : prompt;
+  els.detailPromptPreview.textContent = longPrompt
+    ? promptSnippet(prompt)
+    : prompt;
   els.detailPromptScroll.textContent = prompt;
   els.detailPromptToggle.classList.toggle("hidden", !longPrompt);
-  els.detailPromptToggle.textContent = state.promptExpanded ? "Hide full" : "Show full";
+  els.detailPromptToggle.textContent = state.promptExpanded
+    ? "Hide full"
+    : "Show full";
   els.detailPromptFull.classList.toggle("hidden", !state.promptExpanded);
 }
 
@@ -355,26 +368,35 @@ function renderImageViewMode(hasOutputImage) {
   const mode = hasOutputImage ? state.imageViewMode : "fit";
   els.detailPreview.classList.toggle("is-fill", mode === "fill");
   els.detailPreviewFrame.classList.toggle("has-image", hasOutputImage);
-  [...els.viewModeGroup.querySelectorAll("[data-view-mode]")].forEach((button) => {
-    const active = button.dataset.viewMode === mode;
-    button.classList.toggle("is-active", active);
-    button.disabled = !hasOutputImage;
-  });
+  [...els.viewModeGroup.querySelectorAll("[data-view-mode]")].forEach(
+    (button) => {
+      const active = button.dataset.viewMode === mode;
+      button.classList.toggle("is-active", active);
+      button.disabled = !hasOutputImage;
+    },
+  );
 }
 
 function clampPreviewPan() {
-  if (state.previewZoom <= 1 || els.detailPreview.classList.contains("hidden")) {
+  if (
+    state.previewZoom <= 1 ||
+    els.detailPreview.classList.contains("hidden")
+  ) {
     state.previewPanX = 0;
     state.previewPanY = 0;
     return;
   }
   const maxX = Math.max(
     0,
-    (els.detailPreview.clientWidth * state.previewZoom - els.detailPreview.clientWidth) / 2
+    (els.detailPreview.clientWidth * state.previewZoom -
+      els.detailPreview.clientWidth) /
+      2,
   );
   const maxY = Math.max(
     0,
-    (els.detailPreview.clientHeight * state.previewZoom - els.detailPreview.clientHeight) / 2
+    (els.detailPreview.clientHeight * state.previewZoom -
+      els.detailPreview.clientHeight) /
+      2,
   );
   state.previewPanX = Math.max(-maxX, Math.min(maxX, state.previewPanX));
   state.previewPanY = Math.max(-maxY, Math.min(maxY, state.previewPanY));
@@ -386,7 +408,7 @@ function zoomPreview(nextZoom, anchorClientX = null, anchorClientY = null) {
 
   const clampedZoom = Math.max(
     PREVIEW_MIN_ZOOM,
-    Math.min(PREVIEW_MAX_ZOOM, Number(nextZoom.toFixed(3)))
+    Math.min(PREVIEW_MAX_ZOOM, Number(nextZoom.toFixed(3))),
   );
   if (clampedZoom <= PREVIEW_MIN_ZOOM) {
     resetPreviewViewport();
@@ -409,14 +431,16 @@ function zoomPreview(nextZoom, anchorClientX = null, anchorClientY = null) {
 }
 
 function tunePreviewPanDelta(delta, event) {
-  if (!IS_SAFARI || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return delta;
+  if (!IS_SAFARI || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL)
+    return delta;
   const abs = Math.abs(delta);
   if (abs === 0) return 0;
   const compressed =
     abs <= PREVIEW_SAFARI_SCROLL_BREAKPOINT
       ? abs
       : PREVIEW_SAFARI_SCROLL_BREAKPOINT +
-        (abs - PREVIEW_SAFARI_SCROLL_BREAKPOINT) * PREVIEW_SAFARI_SCROLL_TAIL_RATIO;
+        (abs - PREVIEW_SAFARI_SCROLL_BREAKPOINT) *
+          PREVIEW_SAFARI_SCROLL_TAIL_RATIO;
   return Math.sign(delta) * compressed * PREVIEW_SAFARI_SCROLL_DAMPING;
 }
 
@@ -430,7 +454,10 @@ function syncPreviewTransform() {
   const zoomed = hasImage && state.previewZoom > 1.001;
   els.detailPreview.classList.toggle("is-zoomed", zoomed);
   els.detailPreviewFrame.classList.toggle("is-zoomed", zoomed);
-  els.detailPreviewFrame.classList.toggle("is-dragging", Boolean(state.previewDragging));
+  els.detailPreviewFrame.classList.toggle(
+    "is-dragging",
+    Boolean(state.previewDragging),
+  );
 }
 
 function schedulePreviewTransform() {
@@ -446,22 +473,32 @@ function renderDetail() {
   const isOpen = Boolean(selectedJob && state.modalOpen);
 
   document.body.classList.toggle("modal-open", isOpen);
-  document.body.classList.toggle("modal-immersive", isOpen && state.immersiveMode);
+  document.body.classList.toggle(
+    "modal-immersive",
+    isOpen && state.immersiveMode,
+  );
   els.viewerModal.classList.toggle("hidden", !isOpen);
   els.viewerModal.setAttribute("aria-hidden", isOpen ? "false" : "true");
-  els.viewerModal.classList.toggle("is-immersive", isOpen && state.immersiveMode);
+  els.viewerModal.classList.toggle(
+    "is-immersive",
+    isOpen && state.immersiveMode,
+  );
   els.viewerModal.classList.toggle(
     "immersive-ui-hidden",
-    isOpen && state.immersiveMode && !state.immersiveChromeVisible
+    isOpen && state.immersiveMode && !state.immersiveChromeVisible,
   );
-  els.viewerFullscreenButton.textContent = state.immersiveMode ? "Exit full" : "Fullscreen";
+  els.viewerFullscreenButton.textContent = state.immersiveMode
+    ? "Exit full"
+    : "Fullscreen";
   els.detailEmpty.classList.toggle("hidden", isOpen);
   els.detailContent.classList.toggle("hidden", !isOpen);
   if (!selectedJob || !state.modalOpen) return;
 
   renderDetailStrip(selectedJob, jobs);
   requestAnimationFrame(() => {
-    const selectedThumb = els.detailStrip.querySelector(`[data-job-id="${selectedJob.id}"]`);
+    const selectedThumb = els.detailStrip.querySelector(
+      `[data-job-id="${selectedJob.id}"]`,
+    );
     selectedThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
 
@@ -553,7 +590,9 @@ function schedulePolling() {
   updatePollingIndicator();
   const delay = hasActive ? 2500 : 30000;
   state.pollingTimer = window.setTimeout(() => {
-    fetchJobs({ preserveSelection: true }).catch((error) => setMessage(error.message));
+    fetchJobs({ preserveSelection: true }).catch((error) =>
+      setMessage(error.message),
+    );
   }, delay);
 }
 
@@ -587,7 +626,8 @@ function navigate(delta) {
   const jobs = filteredJobs();
   if (!jobs.length) return;
   const index = currentSelectedIndex();
-  const nextIndex = index < 0 ? 0 : Math.min(Math.max(index + delta, 0), jobs.length - 1);
+  const nextIndex =
+    index < 0 ? 0 : Math.min(Math.max(index + delta, 0), jobs.length - 1);
   state.selectedId = jobs[nextIndex].id;
   state.promptExpanded = false;
   resetPreviewViewport();
@@ -627,7 +667,9 @@ function bindEvents() {
   });
 
   els.refreshButton.addEventListener("click", () => {
-    fetchJobs({ preserveSelection: true }).catch((error) => setMessage(error.message));
+    fetchJobs({ preserveSelection: true }).catch((error) =>
+      setMessage(error.message),
+    );
   });
 
   els.viewModeGroup.addEventListener("click", (event) => {
@@ -658,15 +700,23 @@ function bindEvents() {
         els.detailPreviewFrame.classList.remove("is-wheeling");
       }, 120);
       const isPinchGesture = event.ctrlKey || event.metaKey;
-      const isZoomGesture = state.previewZoom <= 1.001 || isPinchGesture || event.altKey;
+      const isZoomGesture =
+        state.previewZoom <= 1.001 || isPinchGesture || event.altKey;
 
       if (isZoomGesture) {
         const baseSensitivity =
-          (isPinchGesture ? PREVIEW_PINCH_ZOOM_SENSITIVITY : PREVIEW_WHEEL_ZOOM_SENSITIVITY) *
-          (IS_SAFARI && isPinchGesture ? PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER : 1);
+          (isPinchGesture
+            ? PREVIEW_PINCH_ZOOM_SENSITIVITY
+            : PREVIEW_WHEEL_ZOOM_SENSITIVITY) *
+          (IS_SAFARI && isPinchGesture
+            ? PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER
+            : 1);
         const dpiWeight =
-          IS_SAFARI && isPinchGesture ? PREVIEW_SAFARI_PINCH_DPI_WEIGHT : PREVIEW_DEFAULT_DPI_WEIGHT;
-        const dpiBoost = 1 + Math.min(window.devicePixelRatio || 1, 3) * dpiWeight;
+          IS_SAFARI && isPinchGesture
+            ? PREVIEW_SAFARI_PINCH_DPI_WEIGHT
+            : PREVIEW_DEFAULT_DPI_WEIGHT;
+        const dpiBoost =
+          1 + Math.min(window.devicePixelRatio || 1, 3) * dpiWeight;
         const factor = Math.exp(-event.deltaY * baseSensitivity * dpiBoost);
         zoomPreview(state.previewZoom * factor, event.clientX, event.clientY);
         return;
@@ -681,7 +731,7 @@ function bindEvents() {
       }
       schedulePreviewTransform();
     },
-    { passive: false }
+    { passive: false },
   );
 
   els.detailPreviewFrame.addEventListener("dblclick", (event) => {
@@ -695,7 +745,11 @@ function bindEvents() {
   });
 
   els.detailPreviewFrame.addEventListener("mousedown", (event) => {
-    if (state.previewZoom <= 1 || els.detailPreview.classList.contains("hidden")) return;
+    if (
+      state.previewZoom <= 1 ||
+      els.detailPreview.classList.contains("hidden")
+    )
+      return;
     event.preventDefault();
     state.previewDragging = {
       startX: event.clientX,
@@ -710,9 +764,11 @@ function bindEvents() {
     if (state.immersiveMode) pokeImmersiveChrome();
     if (!state.previewDragging) return;
     state.previewPanX =
-      state.previewDragging.originX + (event.clientX - state.previewDragging.startX);
+      state.previewDragging.originX +
+      (event.clientX - state.previewDragging.startX);
     state.previewPanY =
-      state.previewDragging.originY + (event.clientY - state.previewDragging.startY);
+      state.previewDragging.originY +
+      (event.clientY - state.previewDragging.startY);
     schedulePreviewTransform();
   });
 
