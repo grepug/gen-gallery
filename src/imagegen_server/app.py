@@ -251,7 +251,11 @@ def create_app() -> FastAPI:
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="file not found")
         media_type, _ = mimetypes.guess_type(str(file_path))
-        return FileResponse(file_path, media_type=media_type or "application/octet-stream")
+        return FileResponse(
+            file_path,
+            media_type=media_type or "application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @app.post("/admin/import-archive", response_model=ImportArchiveResponse)
     async def import_archive(

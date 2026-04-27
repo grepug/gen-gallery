@@ -801,13 +801,16 @@ class JobStore:
 def job_to_response(job: dict[str, Any], base_url: str) -> JobResponse:
     def _convert(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
         converted: list[dict[str, Any]] = []
+        version_token = (
+            str(job.get("finished_at") or job.get("updated_at") or job.get("created_at") or "")
+        )
         for item in files:
             converted.append(
                 {
                     "filename": item["filename"],
                     "kind": item["kind"],
                     "size_bytes": item["size_bytes"],
-                    "url": f"{base_url}/files/{job['id']}/{item['kind']}/{item['filename']}",
+                    "url": f"{base_url}/files/{job['id']}/{item['kind']}/{item['filename']}?v={version_token}",
                 }
             )
         return converted

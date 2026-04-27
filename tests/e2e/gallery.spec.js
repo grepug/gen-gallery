@@ -1,5 +1,11 @@
 const { test, expect } = require("@playwright/test");
 
+async function clearLocalGalleryCache(page) {
+  await page.addInitScript(() => {
+    window.localStorage.clear();
+  });
+}
+
 function fakeImageDataUrl(label) {
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960">
@@ -68,10 +74,39 @@ async function mockJobs(page, totalJobs = 55) {
   });
 }
 
+async function mockJobsWithDelay(page, totalJobs = 55, delayMs = 800) {
+  const jobs = Array.from({ length: totalJobs }, (_, index) => buildJob(index));
+  await page.route("**/jobs?**", async (route) => {
+    const url = new URL(route.request().url());
+    const limit = Number(url.searchParams.get("limit") || 40);
+    const offset = Number(url.searchParams.get("offset") || 0);
+    const items = jobs.slice(offset, offset + limit);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items,
+        total: totalJobs,
+        limit,
+        offset,
+        counts: {
+          queued: 0,
+          running: 0,
+          retry_waiting: 0,
+          succeeded: totalJobs,
+          failed: 0,
+          canceled: 0,
+        },
+      }),
+    });
+  });
+}
+
 test("home gallery appends more jobs without rebuilding existing cards or jumping to top", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1280, height: 1200 });
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await mockJobs(page);
 
   await page.goto("/");
@@ -117,7 +152,8 @@ test("home gallery appends more jobs without rebuilding existing cards or jumpin
 test("desktop column selector defaults to 4 and updates the gallery grid", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1280, height: 1200 });
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await mockJobs(page, 12);
   await page.goto("/");
 
@@ -139,9 +175,29 @@ test("desktop column selector defaults to 4 and updates the gallery grid", async
 });
 
 test("column selector stays hidden on mobile layouts", async ({ page }) => {
+  await clearLocalGalleryCache(page);
   await page.setViewportSize({ width: 800, height: 1200 });
   await mockJobs(page, 12);
   await page.goto("/");
 
   await expect(page.locator(".desktop-only-control")).toBeHidden();
+});
+
+test("reload paints cached jobs before the background refresh finishes", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await mockJobsWithDelay(page, 40, 900);
+
+  await page.goto("/");
+  await expect(page.locator(".gallery-card")).toHaveCount(40);
+
+  await page.reload();
+
+  await expect(page.locator(".gallery-card")).toHaveCount(40, {
+    timeout: 300,
+  });
+  await expect(page.locator("#gallery-status")).toContainText("Refreshing", {
+    timeout: 300,
+  });
 });

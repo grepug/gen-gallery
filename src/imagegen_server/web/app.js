@@ -18,6 +18,7 @@ const SORT_OPTIONS = {
   updated_asc: { field: "updated_at", direction: "asc" },
 };
 const DESKTOP_COLUMN_OPTIONS = new Set(["2", "3", "4"]);
+const JOB_LIST_CACHE_KEY_PREFIX = "imagegen-gallery:jobs:v1";
 
 const state = {
   jobs: [],
@@ -150,6 +151,56 @@ function jobCounts() {
 
 function filteredJobs() {
   return state.jobs;
+}
+
+function cacheKeyForCurrentQuery() {
+  return `${JOB_LIST_CACHE_KEY_PREFIX}:${state.filter}:${state.sort}:${state.pageSize}`;
+}
+
+function readCachedJobs() {
+  if (typeof window === "undefined" || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(cacheKeyForCurrentQuery());
+    if (!raw) return null;
+    const payload = JSON.parse(raw);
+    if (!payload || !Array.isArray(payload.items)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedJobs(payload) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(
+      cacheKeyForCurrentQuery(),
+      JSON.stringify({
+        items: payload.items,
+        total: payload.total,
+        counts: payload.counts,
+      }),
+    );
+  } catch {
+    // ignore storage quota and privacy mode failures
+  }
+}
+
+function hydrateJobsFromCache() {
+  const cached = readCachedJobs();
+  if (!cached) return false;
+  state.jobs = cached.items;
+  state.filteredTotal = Number(cached.total || 0);
+  state.counts = cached.counts || state.counts;
+  state.totalJobs = Object.values(state.counts).reduce(
+    (sum, value) => sum + Number(value || 0),
+    0,
+  );
+  state.hasMore = state.jobs.length < state.filteredTotal;
+  state.selectedId = null;
+  state.modalOpen = false;
+  render({ galleryMode: "full" });
+  return true;
 }
 
 function syncDesktopColumnCount() {
@@ -883,6 +934,13 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       0,
     );
     state.hasMore = state.jobs.length < state.filteredTotal;
+    if (reset) {
+      writeCachedJobs({
+        items: nextItems,
+        total: payload.total,
+        counts: payload.counts || state.counts,
+      });
+    }
     ensureSelection();
   } finally {
     if (requestSerial !== state.requestSerial) return;
@@ -1096,8 +1154,9 @@ function bindEvents() {
 async function boot() {
   syncDesktopColumnCount();
   bindEvents();
+  const hydratedFromCache = hydrateJobsFromCache();
   try {
-    await fetchJobs();
+    await fetchJobs({ preserveSelection: hydratedFromCache });
   } catch (error) {
     setMessage(error.message);
   }
