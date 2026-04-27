@@ -44,11 +44,21 @@ class JobResponse(BaseModel):
     output_files: list[JobFile] = Field(default_factory=list)
 
 
+class JobStatusCounts(BaseModel):
+    queued: int = 0
+    running: int = 0
+    retry_waiting: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    canceled: int = 0
+
+
 class JobListResponse(BaseModel):
     items: list[JobResponse]
     total: int
     limit: int
     offset: int
+    counts: JobStatusCounts
 
 
 class CreateJobResponse(BaseModel):

@@ -152,18 +152,63 @@ class JobStore:
             raise KeyError(job_id)
         return str(row["status"])
 
-    def list_jobs(self, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
+    def list_jobs(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        status_filter: str,
+        sort_field: str,
+        sort_direction: str,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        where_clause = ""
+        params: list[Any] = []
+        if status_filter == "active":
+            where_clause = "WHERE status IN ('queued', 'running', 'retry_waiting')"
+        elif status_filter != "all":
+            where_clause = "WHERE status = ?"
+            params.append(status_filter)
+
+        order_by = f"{sort_field} {sort_direction}, id {sort_direction}"
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT * FROM jobs
-                ORDER BY created_at DESC
+                {where_clause}
+                ORDER BY {order_by}
                 LIMIT ? OFFSET ?
                 """,
-                (limit, offset),
+                (*params, limit, offset),
             ).fetchall()
-            total = int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
-        return [self._decode_row(row) for row in rows], total
+            if where_clause:
+                total = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM jobs {where_clause}",
+                        params,
+                    ).fetchone()[0]
+                )
+            else:
+                total = int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+            count_rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM jobs
+                GROUP BY status
+                """
+            ).fetchall()
+        counts = {
+            "queued": 0,
+            "running": 0,
+            "retry_waiting": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "canceled": 0,
+        }
+        for row in count_rows:
+            status = str(row["status"])
+            if status in counts:
+                counts[status] = int(row["count"])
+        return [self._decode_row(row) for row in rows], total, counts
 
     def claim_next_job(
         self,

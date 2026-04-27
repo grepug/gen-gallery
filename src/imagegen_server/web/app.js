@@ -1,5 +1,6 @@
 const ACTIVE_STATUSES = new Set(["queued", "running", "retry_waiting"]);
-const JOB_PAGE_SIZE = 200;
+const JOB_PAGE_SIZE = 40;
+const GALLERY_SKELETON_COUNT = 8;
 const PREVIEW_MIN_ZOOM = 1;
 const PREVIEW_MAX_ZOOM = 5.5;
 const PREVIEW_WHEEL_ZOOM_SENSITIVITY = 0.0022;
@@ -19,8 +20,23 @@ const SORT_OPTIONS = {
 
 const state = {
   jobs: [],
+  totalJobs: 0,
+  filteredTotal: 0,
+  counts: {
+    queued: 0,
+    running: 0,
+    retry_waiting: 0,
+    succeeded: 0,
+    failed: 0,
+    canceled: 0,
+  },
   filter: "succeeded",
   sort: "created_desc",
+  pageSize: JOB_PAGE_SIZE,
+  hasMore: false,
+  isLoading: false,
+  loadingMode: null,
+  requestSerial: 0,
   selectedId: null,
   modalOpen: false,
   immersiveMode: false,
@@ -68,6 +84,8 @@ const els = {
   filterGroup: document.getElementById("filter-group"),
   sortSelect: document.getElementById("sort-select"),
   refreshButton: document.getElementById("refresh-button"),
+  galleryStatus: document.getElementById("gallery-status"),
+  galleryLoadMore: document.getElementById("gallery-load-more"),
 };
 
 const IS_SAFARI =
@@ -110,34 +128,31 @@ function referenceFile(job) {
 }
 
 function jobCounts() {
+  const counts = state.counts || {};
   return {
-    all: state.jobs.length,
-    active: state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length,
-    failed: state.jobs.filter((job) => job.status === "failed").length,
-    succeeded: state.jobs.filter((job) => job.status === "succeeded").length,
-    canceled: state.jobs.filter((job) => job.status === "canceled").length,
+    all:
+      (counts.queued || 0) +
+      (counts.running || 0) +
+      (counts.retry_waiting || 0) +
+      (counts.succeeded || 0) +
+      (counts.failed || 0) +
+      (counts.canceled || 0),
+    active:
+      (counts.queued || 0) + (counts.running || 0) + (counts.retry_waiting || 0),
+    failed: counts.failed || 0,
+    succeeded: counts.succeeded || 0,
+    canceled: counts.canceled || 0,
   };
 }
 
-function sortJobs(jobs) {
-  const option = SORT_OPTIONS[state.sort] || SORT_OPTIONS.created_desc;
-  const direction = option.direction === "asc" ? 1 : -1;
-  return [...jobs].sort((left, right) => {
-    const leftValue = left[option.field] || "";
-    const rightValue = right[option.field] || "";
-    if (leftValue === rightValue) return 0;
-    return leftValue > rightValue ? direction : -direction;
-  });
+function filteredJobs() {
+  return state.jobs;
 }
 
-function filteredJobs() {
-  let jobs = state.jobs;
-  if (state.filter === "active") {
-    jobs = state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
-  } else if (state.filter !== "all") {
-    jobs = state.jobs.filter((job) => job.status === state.filter);
-  }
-  return sortJobs(jobs);
+function filterLabelText() {
+  if (state.filter === "all") return "all jobs";
+  if (state.filter === "active") return "active jobs";
+  return `${state.filter} jobs`;
 }
 
 function renderFilterBar() {
@@ -149,6 +164,48 @@ function renderFilterBar() {
     button.classList.toggle("is-active", filter === state.filter);
   });
   els.sortSelect.value = state.sort;
+  if (state.isLoading && state.jobs.length === 0) {
+    els.galleryStatus.textContent = "Loading jobs...";
+  } else {
+    const filterLabel = filterLabelText();
+    const loadingSuffix =
+      state.loadingMode === "append"
+        ? " Loading more..."
+        : state.loadingMode === "refresh"
+          ? " Refreshing..."
+          : state.hasMore && state.filteredTotal > 0
+            ? " Scroll to load more."
+            : "";
+    els.galleryStatus.textContent =
+      state.filteredTotal === 0
+        ? `No ${filterLabel}.${loadingSuffix}`.trim()
+        : `Showing ${state.jobs.length} of ${state.filteredTotal} ${filterLabel}.${loadingSuffix}`.trim();
+  }
+}
+
+function renderLoadMore() {
+  if (state.isLoading && state.jobs.length === 0) {
+    els.galleryLoadMore.textContent = "Loading jobs...";
+    els.galleryLoadMore.classList.remove("is-hidden");
+    return;
+  }
+  if (state.filteredTotal === 0) {
+    els.galleryLoadMore.textContent = "";
+    els.galleryLoadMore.classList.add("is-hidden");
+    return;
+  }
+  if (state.loadingMode === "append") {
+    els.galleryLoadMore.textContent = "Loading more jobs...";
+    els.galleryLoadMore.classList.remove("is-hidden");
+    return;
+  }
+  if (state.hasMore) {
+    els.galleryLoadMore.textContent = `Scroll to load more ${filterLabelText()}.`;
+    els.galleryLoadMore.classList.remove("is-hidden");
+    return;
+  }
+  els.galleryLoadMore.textContent = `All ${state.filteredTotal} ${filterLabelText()} loaded.`;
+  els.galleryLoadMore.classList.remove("is-hidden");
 }
 
 function ensureSelection() {
@@ -282,56 +339,108 @@ function scheduleGalleryMasonry() {
   state.galleryLayoutRaf = window.requestAnimationFrame(syncGalleryMasonry);
 }
 
-function renderGallery() {
+function createGalleryCard(job) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.dataset.jobId = job.id;
+  card.className = `gallery-card ${job.id === state.selectedId ? "is-selected" : ""}`;
+  card.addEventListener("click", () => openModal(job.id));
+
+  const file = outputFile(job);
+  if (file) {
+    const image = document.createElement("img");
+    image.alt = promptSnippet(job.prompt);
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.classList.add("is-pending");
+    const settleImage = () => {
+      image.classList.remove("is-pending");
+      scheduleGalleryMasonry();
+    };
+    image.addEventListener("load", settleImage, { once: true });
+    image.addEventListener("error", settleImage, { once: true });
+    image.src = file.url;
+    if (image.complete) {
+      settleImage();
+    }
+    card.appendChild(image);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "card-placeholder";
+    if (job.status === "failed") {
+      placeholder.textContent = "No generated image";
+    } else if (job.status === "canceled") {
+      placeholder.textContent = "Canceled before image output";
+    } else {
+      placeholder.textContent = "Waiting for image";
+    }
+    card.appendChild(placeholder);
+  }
+
+  const topline = document.createElement("div");
+  topline.className = "card-topline";
+  topline.innerHTML = `<p class="card-title">${formatTimestamp(job.created_at)}</p>`;
+
+  const status = document.createElement("span");
+  status.className = `status-pill ${statusClass(job.status)}`;
+  status.textContent = job.status.replace("_", " ");
+  topline.appendChild(status);
+
+  const prompt = document.createElement("p");
+  prompt.className = "card-prompt";
+  prompt.textContent = promptSnippet(job.prompt);
+
+  const bottomline = document.createElement("div");
+  bottomline.className = "card-bottomline";
+  bottomline.innerHTML = `<span class="card-title">${job.assigned_key_name || "No key yet"}</span><span class="card-title">Attempt ${job.attempt_count}</span>`;
+
+  card.append(topline, prompt, bottomline);
+  return card;
+}
+
+function renderGallery({ appendOnly = false } = {}) {
   const jobs = filteredJobs();
-  els.galleryGrid.innerHTML = "";
-  els.galleryEmpty.classList.toggle("hidden", jobs.length > 0);
+  const showSkeletons = state.isLoading && jobs.length === 0;
+  if (!appendOnly) {
+    els.galleryGrid.innerHTML = "";
+  }
+  els.galleryEmpty.classList.toggle(
+    "hidden",
+    jobs.length > 0 || showSkeletons || appendOnly,
+  );
+
+  if (showSkeletons) {
+    for (let index = 0; index < GALLERY_SKELETON_COUNT; index += 1) {
+      const card = document.createElement("div");
+      card.className = "gallery-card is-skeleton";
+      card.innerHTML = `
+        <div class="card-placeholder">Loading</div>
+        <div class="card-topline">
+          <p class="card-title">Loading</p>
+          <span class="status-pill">Loading</span>
+        </div>
+        <p class="card-prompt">Loading</p>
+        <div class="card-bottomline">
+          <span class="card-title">Loading</span>
+          <span class="card-title">Loading</span>
+        </div>
+      `;
+      els.galleryGrid.appendChild(card);
+    }
+    return;
+  }
+
+  const existingIds = appendOnly
+    ? new Set(
+        [...els.galleryGrid.querySelectorAll(".gallery-card")].map(
+          (card) => card.dataset.jobId,
+        ),
+      )
+    : null;
 
   jobs.forEach((job) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = `gallery-card ${job.id === state.selectedId ? "is-selected" : ""}`;
-    card.addEventListener("click", () => openModal(job.id));
-
-    const file = outputFile(job);
-    if (file) {
-      const image = document.createElement("img");
-      image.src = file.url;
-      image.alt = promptSnippet(job.prompt);
-      image.addEventListener("load", scheduleGalleryMasonry, { once: true });
-      card.appendChild(image);
-    } else {
-      const placeholder = document.createElement("div");
-      placeholder.className = "card-placeholder";
-      if (job.status === "failed") {
-        placeholder.textContent = "No generated image";
-      } else if (job.status === "canceled") {
-        placeholder.textContent = "Canceled before image output";
-      } else {
-        placeholder.textContent = "Waiting for image";
-      }
-      card.appendChild(placeholder);
-    }
-
-    const topline = document.createElement("div");
-    topline.className = "card-topline";
-    topline.innerHTML = `<p class="card-title">${formatTimestamp(job.created_at)}</p>`;
-
-    const status = document.createElement("span");
-    status.className = `status-pill ${statusClass(job.status)}`;
-    status.textContent = job.status.replace("_", " ");
-    topline.appendChild(status);
-
-    const prompt = document.createElement("p");
-    prompt.className = "card-prompt";
-    prompt.textContent = promptSnippet(job.prompt);
-
-    const bottomline = document.createElement("div");
-    bottomline.className = "card-bottomline";
-    bottomline.innerHTML = `<span class="card-title">${job.assigned_key_name || "No key yet"}</span><span class="card-title">Attempt ${job.attempt_count}</span>`;
-
-    card.append(topline, prompt, bottomline);
-    els.galleryGrid.appendChild(card);
+    if (existingIds?.has(job.id)) return;
+    els.galleryGrid.appendChild(createGalleryCard(job));
   });
   scheduleGalleryMasonry();
 }
@@ -355,6 +464,8 @@ function renderDetailStrip(selectedJob, jobs) {
       const image = document.createElement("img");
       image.src = file.url;
       image.alt = promptSnippet(job.prompt);
+      image.loading = "lazy";
+      image.decoding = "async";
       thumb.appendChild(image);
     } else {
       const fallback = document.createElement("div");
@@ -655,24 +766,73 @@ async function mutateJob(path, options) {
   await fetchJobs({ preserveSelection: true });
 }
 
-function render() {
+function render({ galleryMode = "full" } = {}) {
   ensureSelection();
   renderFilterBar();
-  renderGallery();
+  if (galleryMode === "full") {
+    renderGallery();
+  } else if (galleryMode === "append") {
+    renderGallery({ appendOnly: true });
+  }
+  renderLoadMore();
   renderDetail();
 }
 
-async function fetchJobs({ preserveSelection = false } = {}) {
-  const response = await fetch(`/jobs?limit=${JOB_PAGE_SIZE}&offset=0`);
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.detail || "Failed to load jobs");
-  }
-  const payload = await response.json();
-  state.jobs = payload.items;
+async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
+  if (state.isLoading) return;
+  const requestSerial = ++state.requestSerial;
+  const requestLimit =
+    reset && preserveSelection
+      ? Math.max(state.pageSize, state.jobs.length || state.pageSize)
+      : state.pageSize;
+  const offset = reset ? 0 : state.jobs.length;
 
-  ensureSelection();
-  render();
+  if (reset && !preserveSelection) {
+    state.jobs = [];
+    state.filteredTotal = 0;
+    state.hasMore = false;
+    state.selectedId = null;
+    state.modalOpen = false;
+  }
+
+  state.isLoading = true;
+  state.loadingMode =
+    reset && preserveSelection
+      ? "refresh"
+      : reset
+        ? "initial"
+        : "append";
+  render({ galleryMode: reset ? "full" : "none" });
+  const params = new URLSearchParams({
+    limit: String(requestLimit),
+    offset: String(offset),
+    status: state.filter,
+    sort: state.sort,
+  });
+  try {
+    const response = await fetch(`/jobs?${params.toString()}`);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || "Failed to load jobs");
+    }
+    const payload = await response.json();
+    if (requestSerial !== state.requestSerial) return;
+    const nextItems = Array.isArray(payload.items) ? payload.items : [];
+    state.jobs = reset ? nextItems : [...state.jobs, ...nextItems];
+    state.filteredTotal = payload.total;
+    state.counts = payload.counts || state.counts;
+    state.totalJobs = Object.values(state.counts).reduce(
+      (sum, value) => sum + Number(value || 0),
+      0,
+    );
+    state.hasMore = state.jobs.length < state.filteredTotal;
+    ensureSelection();
+  } finally {
+    if (requestSerial !== state.requestSerial) return;
+    state.isLoading = false;
+    state.loadingMode = null;
+    render({ galleryMode: reset ? "full" : "append" });
+  }
 }
 
 function navigate(delta) {
@@ -714,12 +874,12 @@ function bindEvents() {
     const button = event.target.closest("[data-filter]");
     if (!button) return;
     state.filter = button.dataset.filter;
-    render();
+    fetchJobs().catch((error) => setMessage(error.message));
   });
 
   els.sortSelect.addEventListener("change", () => {
     state.sort = els.sortSelect.value;
-    render();
+    fetchJobs().catch((error) => setMessage(error.message));
   });
   window.addEventListener("resize", scheduleGalleryMasonry);
 
@@ -845,6 +1005,20 @@ function bindEvents() {
   });
   document.addEventListener("fullscreenchange", syncImmersiveState);
   window.addEventListener("keydown", onKeydown);
+
+  const loadMoreObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[0];
+      if (!entry?.isIntersecting || state.isLoading || !state.hasMore) return;
+      fetchJobs({ reset: false, preserveSelection: true }).catch((error) =>
+        setMessage(error.message),
+      );
+    },
+    {
+      rootMargin: "360px 0px",
+    },
+  );
+  loadMoreObserver.observe(els.galleryLoadMore);
 }
 
 async function boot() {

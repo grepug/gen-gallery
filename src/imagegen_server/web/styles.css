@@ -192,6 +192,25 @@ button {
   min-height: calc(100vh - 158px);
 }
 
+.gallery-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gallery-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gallery-status {
+  margin: 0;
+  color: var(--text-soft);
+}
+
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -214,6 +233,36 @@ button {
   text-align: left;
 }
 
+.gallery-card.is-skeleton {
+  pointer-events: none;
+}
+
+.gallery-card.is-skeleton .card-placeholder {
+  min-height: 220px;
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--surface-muted) 0%,
+    oklch(96% 0.006 240) 50%,
+    var(--surface-muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: gallery-shimmer 1.3s linear infinite;
+}
+
+.gallery-card.is-skeleton .card-title,
+.gallery-card.is-skeleton .card-prompt,
+.gallery-card.is-skeleton .status-pill {
+  min-height: 14px;
+  color: transparent;
+  border-color: transparent;
+  background: var(--surface-muted);
+}
+
+.gallery-card.is-skeleton .status-pill::before {
+  background: transparent;
+}
+
 .gallery-card.is-selected {
   border-color: var(--accent);
   box-shadow: 0 14px 32px oklch(56% 0.06 245 / 0.16);
@@ -230,6 +279,25 @@ button {
 .gallery-card img {
   height: auto;
   object-fit: cover;
+  min-height: 180px;
+}
+
+.gallery-card img.is-pending {
+  min-height: 220px;
+}
+
+.gallery-load-more {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 0 18px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.gallery-load-more.is-hidden {
+  visibility: hidden;
 }
 
 .card-placeholder {
@@ -265,6 +333,15 @@ button {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+@keyframes gallery-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 .status-pill {
@@ -775,6 +852,10 @@ button {
 
   .gallery-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gallery-toolbar {
+    align-items: stretch;
   }
 
   .detail-content {

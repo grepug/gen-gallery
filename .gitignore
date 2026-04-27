@@ -8,3 +8,7 @@ build/
 dist/
 *.egg-info/
 .tmp/
+node_modules/
+playwright-report/
+test-results/
+.playwright-cli/

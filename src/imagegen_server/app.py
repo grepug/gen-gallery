@@ -50,6 +50,14 @@ def create_app() -> FastAPI:
     app.state.worker_pool = worker_pool
     app.mount("/ui", StaticFiles(directory=web_dir, html=True), name="ui")
 
+    valid_status_filters = {"all", "active", "succeeded", "failed", "canceled"}
+    sort_options = {
+        "created_desc": ("created_at", "DESC"),
+        "created_asc": ("created_at", "ASC"),
+        "updated_desc": ("updated_at", "DESC"),
+        "updated_asc": ("updated_at", "ASC"),
+    }
+
     @app.on_event("startup")
     async def on_startup() -> None:
         await worker_pool.start()
@@ -212,8 +220,21 @@ def create_app() -> FastAPI:
         request: Request,
         limit: int = Query(20, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        status: str = Query("all"),
+        sort: str = Query("created_desc"),
     ) -> JobListResponse:
-        jobs, total = store.list_jobs(limit=limit, offset=offset)
+        if status not in valid_status_filters:
+            raise HTTPException(status_code=400, detail="invalid status filter")
+        if sort not in sort_options:
+            raise HTTPException(status_code=400, detail="invalid sort option")
+        sort_field, sort_direction = sort_options[sort]
+        jobs, total, counts = store.list_jobs(
+            limit=limit,
+            offset=offset,
+            status_filter=status,
+            sort_field=sort_field,
+            sort_direction=sort_direction,
+        )
         base_url = str(request.base_url).rstrip("/")
         items = [job_to_response(job, base_url) for job in jobs]
         return JobListResponse(
@@ -221,6 +242,7 @@ def create_app() -> FastAPI:
             total=total,
             limit=limit,
             offset=offset,
+            counts=counts,
         )
 
     @app.get("/files/{job_id}/{kind}/{filename}")

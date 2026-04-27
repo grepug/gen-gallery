@@ -42,7 +42,13 @@
 
       <main class="workspace">
         <section class="gallery-panel">
+          <div class="gallery-toolbar">
+            <p class="gallery-status" id="gallery-status">Loading jobs...</p>
+          </div>
           <div class="gallery-grid" id="gallery-grid" aria-live="polite"></div>
+          <div class="gallery-load-more" id="gallery-load-more" aria-live="polite">
+            Loading more jobs...
+          </div>
           <div class="empty-state hidden" id="gallery-empty">
             <h2>No jobs match this filter</h2>
             <p>Try another filter, or wait for the queue to produce more images.</p>
