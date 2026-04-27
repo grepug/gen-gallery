@@ -427,10 +427,11 @@ class JobStore:
         return self.get_job(job_id)
 
     def delete_job(self, job_id: str) -> None:
+        shared_storage_paths: list[str] = []
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status FROM jobs WHERE id = ?",
+                "SELECT status, input_files_json FROM jobs WHERE id = ?",
                 (job_id,),
             ).fetchone()
             if row is None:
@@ -439,11 +440,16 @@ class JobStore:
             if row["status"] == "running":
                 connection.execute("ROLLBACK")
                 raise ValueError("running jobs cannot be deleted")
+            for item in json.loads(row["input_files_json"] or "[]"):
+                storage_path = item.get("storage_path")
+                if isinstance(storage_path, str) and storage_path.startswith("shared/"):
+                    shared_storage_paths.append(storage_path)
             connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             connection.execute("COMMIT")
         job_dir = self.jobs_dir / job_id
         if job_dir.exists():
             shutil.rmtree(job_dir)
+        self.delete_unreferenced_shared_files(shared_storage_paths)
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         now = utcnow()
@@ -539,6 +545,34 @@ class JobStore:
             if item["kind"] == "input" and item["filename"] == filename:
                 return self.resolve_input_file_path(job_id, item)
         return self.jobs_dir / job_id / kind / filename
+
+    def delete_unreferenced_shared_files(self, storage_paths: list[str]) -> None:
+        if not storage_paths:
+            return
+        remaining_paths = self.list_referenced_storage_paths()
+        for storage_path in sorted(set(storage_paths)):
+            if storage_path in remaining_paths:
+                continue
+            target = self.server_home / storage_path
+            if target.exists():
+                target.unlink()
+            parent = target.parent
+            while parent != self.server_home and parent.exists():
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+                parent = parent.parent
+
+    def list_referenced_storage_paths(self) -> set[str]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT input_files_json FROM jobs").fetchall()
+        referenced: set[str] = set()
+        for row in rows:
+            for item in json.loads(row["input_files_json"] or "[]"):
+                storage_path = item.get("storage_path")
+                if isinstance(storage_path, str) and storage_path:
+                    referenced.add(storage_path)
+        return referenced
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

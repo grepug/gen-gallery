@@ -5,6 +5,7 @@ import unittest
 import uuid
 from pathlib import Path
 
+from imagegen_server.openai_client import make_data_url
 from imagegen_server.storage import JobStore
 
 
@@ -38,6 +39,7 @@ class ReferenceImageDedupeTests(unittest.TestCase):
             shared_files = list(shared_dir.iterdir())
             self.assertEqual(len(shared_files), 1)
             self.assertEqual(shared_files[0].name, first_filename)
+            self.assertTrue(make_data_url(shared_files[0]).startswith("data:image/png;base64,"))
 
             input_files = [
                 {
@@ -62,6 +64,54 @@ class ReferenceImageDedupeTests(unittest.TestCase):
                 )
                 resolved = store.resolve_job_file_path(job_id, "input", first_filename)
                 self.assertEqual(resolved.read_bytes(), image_bytes)
+
+    def test_delete_job_removes_shared_file_only_after_last_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_home = Path(temp_dir)
+            jobs_dir = server_home / "jobs"
+            store = JobStore(server_home / "app.db", jobs_dir)
+            store.initialize()
+
+            image_bytes = (
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+            )
+            filename, storage_path = store.store_reference_image(image_bytes, ".bin")
+            input_files = [
+                {
+                    "filename": filename,
+                    "kind": "input",
+                    "size_bytes": len(image_bytes),
+                    "storage_path": storage_path,
+                }
+            ]
+
+            job_ids: list[str] = []
+            for prompt in ("first", "second"):
+                job_id = str(uuid.uuid4())
+                job_ids.append(job_id)
+                store.make_job_dirs(job_id)
+                store.create_job(
+                    job_id=job_id,
+                    prompt=prompt,
+                    image_action="edit",
+                    model_override=None,
+                    tool_model_override=None,
+                    max_retries=0,
+                    retry_delay_seconds=60,
+                    input_files=input_files,
+                )
+
+            shared_path = server_home / storage_path
+            self.assertTrue(shared_path.exists())
+            self.assertTrue(make_data_url(shared_path).startswith("data:image/png;base64,"))
+
+            store.delete_job(job_ids[0])
+            self.assertTrue(shared_path.exists())
+
+            store.delete_job(job_ids[1])
+            self.assertFalse(shared_path.exists())
 
 
 if __name__ == "__main__":
