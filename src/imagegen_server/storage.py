@@ -339,9 +339,9 @@ class JobStore:
             if row is None:
                 connection.execute("ROLLBACK")
                 raise KeyError(job_id)
-            if row["status"] != "failed":
+            if row["status"] not in {"failed", "canceled"}:
                 connection.execute("ROLLBACK")
-                raise ValueError("only failed jobs can be retried")
+                raise ValueError("only failed or canceled jobs can be retried")
             connection.execute(
                 """
                 UPDATE jobs

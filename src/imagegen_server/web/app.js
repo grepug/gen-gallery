@@ -34,6 +34,7 @@ const state = {
   previewDragging: null,
   previewTransformRaf: null,
   previewWheelTimer: null,
+  galleryLayoutRaf: null,
   pollingTimer: null,
   pollingMode: "idle",
 };
@@ -279,6 +280,29 @@ function renderSummary() {
   });
 }
 
+function syncGalleryMasonry() {
+  state.galleryLayoutRaf = null;
+  const cards = els.galleryGrid.querySelectorAll(".gallery-card");
+  if (!cards.length) return;
+  const styles = window.getComputedStyle(els.galleryGrid);
+  const autoRow = Number.parseFloat(styles.gridAutoRows);
+  const rowGap = Number.parseFloat(styles.rowGap);
+  if (!autoRow || Number.isNaN(autoRow)) return;
+  cards.forEach((card) => {
+    card.style.gridRowEnd = "";
+    const span = Math.max(
+      1,
+      Math.ceil((card.getBoundingClientRect().height + rowGap) / (autoRow + rowGap)),
+    );
+    card.style.gridRowEnd = `span ${span}`;
+  });
+}
+
+function scheduleGalleryMasonry() {
+  if (state.galleryLayoutRaf !== null) return;
+  state.galleryLayoutRaf = window.requestAnimationFrame(syncGalleryMasonry);
+}
+
 function renderGallery() {
   const jobs = filteredJobs();
   els.galleryGrid.innerHTML = "";
@@ -295,6 +319,7 @@ function renderGallery() {
       const image = document.createElement("img");
       image.src = file.url;
       image.alt = promptSnippet(job.prompt);
+      image.addEventListener("load", scheduleGalleryMasonry, { once: true });
       card.appendChild(image);
     } else {
       const placeholder = document.createElement("div");
@@ -329,6 +354,7 @@ function renderGallery() {
     card.append(topline, prompt, bottomline);
     els.galleryGrid.appendChild(card);
   });
+  scheduleGalleryMasonry();
 }
 
 function renderDetailStrip(selectedJob, jobs) {
@@ -584,7 +610,8 @@ function renderDetail() {
   renderReference(selectedJob);
   renderMeta(selectedJob);
 
-  const canRetry = selectedJob.status === "failed";
+  const canRetry =
+    selectedJob.status === "failed" || selectedJob.status === "canceled";
   const canCancel = ACTIVE_STATUSES.has(selectedJob.status);
   const canDelete = !canCancel;
 
@@ -735,6 +762,7 @@ function bindEvents() {
     state.sort = els.sortSelect.value;
     render();
   });
+  window.addEventListener("resize", scheduleGalleryMasonry);
 
   els.refreshButton.addEventListener("click", () => {
     fetchJobs({ preserveSelection: true }).catch((error) =>

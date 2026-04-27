@@ -200,17 +200,19 @@ button {
 }
 
 .gallery-grid {
-  column-count: 4;
-  column-gap: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-flow: dense;
+  grid-auto-rows: 8px;
+  gap: 14px;
+  align-items: start;
 }
 
 .gallery-card {
-  break-inside: avoid;
   display: flex;
   flex-direction: column;
   gap: 12px;
   width: 100%;
-  margin: 0 0 14px;
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 12px;
@@ -763,7 +765,7 @@ button {
 
 @media (max-width: 1180px) {
   .gallery-grid {
-    column-count: 3;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .viewer-shell {
@@ -779,7 +781,7 @@ button {
   }
 
   .gallery-grid {
-    column-count: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .detail-content {
@@ -822,7 +824,7 @@ button {
 
 @media (max-width: 560px) {
   .gallery-grid {
-    column-count: 1;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .topbar,
