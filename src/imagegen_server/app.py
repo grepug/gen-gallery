@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup() -> None:
+        await asyncio.to_thread(store.requeue_interrupted_jobs)
         await worker_pool.start()
 
     @app.on_event("shutdown")

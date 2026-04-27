@@ -360,6 +360,51 @@ class JobStore:
             )
         return cursor.rowcount > 0
 
+    def requeue_interrupted_jobs(
+        self,
+        reason: str = "Interrupted by server restart.",
+    ) -> list[str]:
+        now = utcnow()
+        recovered_job_ids: list[str] = []
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM jobs
+                WHERE status = 'running'
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            recovered_job_ids = [str(row["id"]) for row in rows]
+            if recovered_job_ids:
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'queued',
+                        attempt_count = CASE
+                            WHEN attempt_count > 0 THEN attempt_count - 1
+                            ELSE 0
+                        END,
+                        assigned_key_name = NULL,
+                        updated_at = ?,
+                        started_at = NULL,
+                        next_retry_at = NULL,
+                        last_error = ?,
+                        avoid_key_name = NULL
+                    WHERE status = 'running'
+                    """,
+                    (now, reason),
+                )
+            connection.execute("COMMIT")
+        for job_id in recovered_job_ids:
+            self.append_event(
+                job_id,
+                "attempt_interrupted_by_restart",
+                {"reason": reason},
+            )
+        return recovered_job_ids
+
     def update_input_files(self, job_id: str, input_files: list[dict[str, Any]]) -> None:
         now = utcnow()
         with self.connect() as connection:
