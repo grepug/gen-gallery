@@ -4,6 +4,11 @@ const PREVIEW_MIN_ZOOM = 1;
 const PREVIEW_MAX_ZOOM = 5.5;
 const PREVIEW_WHEEL_ZOOM_SENSITIVITY = 0.0022;
 const PREVIEW_PINCH_ZOOM_SENSITIVITY = 0.0036;
+const PREVIEW_SAFARI_PINCH_DPI_WEIGHT = 0.2;
+const PREVIEW_DEFAULT_DPI_WEIGHT = 0.12;
+const PREVIEW_SAFARI_SCROLL_DAMPING = 0.9;
+const PREVIEW_SAFARI_SCROLL_BREAKPOINT = 28;
+const PREVIEW_SAFARI_SCROLL_TAIL_RATIO = 0.45;
 
 const state = {
   jobs: [],
@@ -57,6 +62,12 @@ const els = {
   statusSummary: document.getElementById("status-summary"),
   refreshButton: document.getElementById("refresh-button"),
 };
+
+const IS_SAFARI =
+  typeof navigator !== "undefined" &&
+  /Safari/i.test(navigator.userAgent) &&
+  /Apple/i.test(navigator.vendor || "") &&
+  !/CriOS|Chrome|Chromium|EdgiOS|Edg|Firefox|FxiOS|OPR|OPT/i.test(navigator.userAgent);
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -396,6 +407,18 @@ function zoomPreview(nextZoom, anchorClientX = null, anchorClientY = null) {
   schedulePreviewTransform();
 }
 
+function tunePreviewPanDelta(delta, event) {
+  if (!IS_SAFARI || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return delta;
+  const abs = Math.abs(delta);
+  if (abs === 0) return 0;
+  const compressed =
+    abs <= PREVIEW_SAFARI_SCROLL_BREAKPOINT
+      ? abs
+      : PREVIEW_SAFARI_SCROLL_BREAKPOINT +
+        (abs - PREVIEW_SAFARI_SCROLL_BREAKPOINT) * PREVIEW_SAFARI_SCROLL_TAIL_RATIO;
+  return Math.sign(delta) * compressed * PREVIEW_SAFARI_SCROLL_DAMPING;
+}
+
 function syncPreviewTransform() {
   state.previewTransformRaf = null;
   clampPreviewPan();
@@ -640,16 +663,20 @@ function bindEvents() {
         const baseSensitivity = isPinchGesture
           ? PREVIEW_PINCH_ZOOM_SENSITIVITY
           : PREVIEW_WHEEL_ZOOM_SENSITIVITY;
-        const dpiBoost = 1 + Math.min(window.devicePixelRatio || 1, 3) * 0.12;
+        const dpiWeight =
+          IS_SAFARI && isPinchGesture ? PREVIEW_SAFARI_PINCH_DPI_WEIGHT : PREVIEW_DEFAULT_DPI_WEIGHT;
+        const dpiBoost = 1 + Math.min(window.devicePixelRatio || 1, 3) * dpiWeight;
         const factor = Math.exp(-event.deltaY * baseSensitivity * dpiBoost);
         zoomPreview(state.previewZoom * factor, event.clientX, event.clientY);
         return;
       }
 
-      state.previewPanY -= event.deltaY;
-      state.previewPanX -= event.deltaX;
-      if (event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-        state.previewPanX -= event.deltaY;
+      const panDeltaY = tunePreviewPanDelta(event.deltaY, event);
+      const panDeltaX = tunePreviewPanDelta(event.deltaX, event);
+      state.previewPanY -= panDeltaY;
+      state.previewPanX -= panDeltaX;
+      if (event.shiftKey && Math.abs(panDeltaY) > Math.abs(panDeltaX)) {
+        state.previewPanX -= panDeltaY;
       }
       schedulePreviewTransform();
     },
