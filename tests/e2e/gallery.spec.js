@@ -41,12 +41,8 @@ function buildJob(index) {
   };
 }
 
-test("home gallery appends more jobs without rebuilding existing cards or jumping to top", async ({
-  page,
-}) => {
-  const totalJobs = 55;
+async function mockJobs(page, totalJobs = 55) {
   const jobs = Array.from({ length: totalJobs }, (_, index) => buildJob(index));
-
   await page.route("**/jobs?**", async (route) => {
     const url = new URL(route.request().url());
     const limit = Number(url.searchParams.get("limit") || 40);
@@ -70,6 +66,13 @@ test("home gallery appends more jobs without rebuilding existing cards or jumpin
       }),
     });
   });
+}
+
+test("home gallery appends more jobs without rebuilding existing cards or jumping to top", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await mockJobs(page);
 
   await page.goto("/");
 
@@ -109,4 +112,36 @@ test("home gallery appends more jobs without rebuilding existing cards or jumpin
   await expect(page.locator("#gallery-load-more")).toHaveText(
     "All 55 succeeded jobs loaded.",
   );
+});
+
+test("desktop column selector defaults to 4 and updates the gallery grid", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await mockJobs(page, 12);
+  await page.goto("/");
+
+  const columnSelect = page.locator("#column-count-select");
+  await expect(columnSelect).toBeVisible();
+  await expect(columnSelect).toHaveValue("4");
+
+  const initialColumns = await page.locator("#gallery-grid").evaluate((element) => {
+    return getComputedStyle(element).gridTemplateColumns.split(" ").length;
+  });
+  expect(initialColumns).toBe(4);
+
+  await columnSelect.selectOption("3");
+
+  const updatedColumns = await page.locator("#gallery-grid").evaluate((element) => {
+    return getComputedStyle(element).gridTemplateColumns.split(" ").length;
+  });
+  expect(updatedColumns).toBe(3);
+});
+
+test("column selector stays hidden on mobile layouts", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 1200 });
+  await mockJobs(page, 12);
+  await page.goto("/");
+
+  await expect(page.locator(".desktop-only-control")).toBeHidden();
 });

@@ -17,6 +17,7 @@ const SORT_OPTIONS = {
   updated_desc: { field: "updated_at", direction: "desc" },
   updated_asc: { field: "updated_at", direction: "asc" },
 };
+const DESKTOP_COLUMN_OPTIONS = new Set(["2", "3", "4"]);
 
 const state = {
   jobs: [],
@@ -32,6 +33,7 @@ const state = {
   },
   filter: "succeeded",
   sort: "created_desc",
+  desktopColumnCount: 4,
   pageSize: JOB_PAGE_SIZE,
   hasMore: false,
   isLoading: false,
@@ -83,6 +85,7 @@ const els = {
   globalMessage: document.getElementById("global-message"),
   filterGroup: document.getElementById("filter-group"),
   sortSelect: document.getElementById("sort-select"),
+  columnCountSelect: document.getElementById("column-count-select"),
   refreshButton: document.getElementById("refresh-button"),
   galleryStatus: document.getElementById("gallery-status"),
   galleryLoadMore: document.getElementById("gallery-load-more"),
@@ -149,6 +152,13 @@ function filteredJobs() {
   return state.jobs;
 }
 
+function syncDesktopColumnCount() {
+  els.galleryGrid.style.setProperty(
+    "--gallery-desktop-columns",
+    String(state.desktopColumnCount),
+  );
+}
+
 function filterLabelText() {
   if (state.filter === "all") return "all jobs";
   if (state.filter === "active") return "active jobs";
@@ -164,6 +174,9 @@ function renderFilterBar() {
     button.classList.toggle("is-active", filter === state.filter);
   });
   els.sortSelect.value = state.sort;
+  if (els.columnCountSelect) {
+    els.columnCountSelect.value = String(state.desktopColumnCount);
+  }
   if (state.isLoading && state.jobs.length === 0) {
     els.galleryStatus.textContent = "Loading jobs...";
   } else {
@@ -881,6 +894,13 @@ function bindEvents() {
     state.sort = els.sortSelect.value;
     fetchJobs().catch((error) => setMessage(error.message));
   });
+  els.columnCountSelect?.addEventListener("change", () => {
+    const nextValue = els.columnCountSelect.value;
+    if (!DESKTOP_COLUMN_OPTIONS.has(nextValue)) return;
+    state.desktopColumnCount = Number(nextValue);
+    syncDesktopColumnCount();
+    scheduleGalleryMasonry();
+  });
   window.addEventListener("resize", scheduleGalleryMasonry);
 
   els.refreshButton.addEventListener("click", () => {
@@ -1022,6 +1042,7 @@ function bindEvents() {
 }
 
 async function boot() {
+  syncDesktopColumnCount();
   bindEvents();
   try {
     await fetchJobs();

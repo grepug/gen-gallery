@@ -213,7 +213,8 @@ button {
 
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  --gallery-desktop-columns: 4;
+  grid-template-columns: repeat(var(--gallery-desktop-columns), minmax(0, 1fr));
   grid-auto-flow: dense;
   grid-auto-rows: 8px;
   gap: 14px;
@@ -834,10 +835,6 @@ button {
 }
 
 @media (max-width: 1180px) {
-  .gallery-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .viewer-shell {
     width: calc(100vw - 28px);
     height: calc(100vh - 28px);
@@ -852,6 +849,10 @@ button {
 
   .gallery-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .desktop-only-control {
+    display: none;
   }
 
   .gallery-toolbar {
