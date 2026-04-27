@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -88,6 +89,15 @@ class JobStore:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN avoid_key_name TEXT"
                     )
+        self.reference_images_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def server_home(self) -> Path:
+        return self.jobs_dir.parent
+
+    @property
+    def reference_images_dir(self) -> Path:
+        return self.server_home / "shared" / "reference-images"
 
     def create_job(
         self,
@@ -495,6 +505,40 @@ class JobStore:
         (job_dir / "output").mkdir(parents=True, exist_ok=True)
         (job_dir / "meta").mkdir(parents=True, exist_ok=True)
         return job_dir
+
+    def store_reference_image(self, content: bytes, suffix: str) -> tuple[str, str]:
+        digest = hashlib.sha256(content).hexdigest()
+        normalized_suffix = suffix.lower()
+        existing = next(self.reference_images_dir.glob(f"{digest}.*"), None)
+        if existing is not None:
+            relative_path = existing.relative_to(self.server_home).as_posix()
+            return existing.name, relative_path
+
+        filename = f"{digest}{normalized_suffix}"
+        target = self.reference_images_dir / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("xb") as handle:
+                handle.write(content)
+        except FileExistsError:
+            pass
+        relative_path = target.relative_to(self.server_home).as_posix()
+        return filename, relative_path
+
+    def resolve_input_file_path(self, job_id: str, item: dict[str, Any]) -> Path:
+        storage_path = item.get("storage_path")
+        if isinstance(storage_path, str) and storage_path:
+            return self.server_home / storage_path
+        return self.jobs_dir / job_id / "input" / str(item["filename"])
+
+    def resolve_job_file_path(self, job_id: str, kind: str, filename: str) -> Path:
+        if kind == "output":
+            return self.jobs_dir / job_id / kind / filename
+        job = self.get_job(job_id)
+        for item in job["input_files"]:
+            if item["kind"] == "input" and item["filename"] == filename:
+                return self.resolve_input_file_path(job_id, item)
+        return self.jobs_dir / job_id / kind / filename
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,7 @@ Queue-backed image generation service built around the `imagegen` OpenAI Respons
 All runtime data lives under `~/.imagegen-server/` by default:
 
 - `app.db`
-- `jobs/<job_id>/input`
+- `shared/reference-images/<sha256>.<ext>`
 - `jobs/<job_id>/output`
 - `jobs/<job_id>/meta`
 - `logs/server.log`
