@@ -55,14 +55,30 @@ def summarize_stream_error(event: dict) -> str:
     return json.dumps(event, ensure_ascii=False, sort_keys=True)
 
 
+def sniff_image_mime_type(image_bytes: bytes) -> str | None:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
+
 def make_data_url(image_path: Path) -> str:
-    mime_type, _ = mimetypes.guess_type(str(image_path))
+    image_bytes = image_path.read_bytes()
+    mime_type = sniff_image_mime_type(image_bytes)
+    if not mime_type:
+        mime_type, _ = mimetypes.guess_type(str(image_path))
     if not mime_type or not mime_type.startswith("image/"):
         raise ImageGenerationError(
             f"Could not determine an image MIME type for '{image_path}'.",
             retryable=False,
         )
-    image_bytes = image_path.read_bytes()
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{image_b64}"
 

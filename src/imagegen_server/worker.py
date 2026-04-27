@@ -87,7 +87,7 @@ class WorkerPool:
                     image_action=job["image_action"],
                     prompt=job["prompt"],
                     reference_images=[
-                        context.settings.jobs_dir / job_id / "input" / item["filename"]
+                        context.store.resolve_input_file_path(job_id, item)
                         for item in job["input_files"]
                     ],
                     timeout_seconds=context.settings.job_timeout_seconds,

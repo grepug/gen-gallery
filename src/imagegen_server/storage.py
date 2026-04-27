@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -15,6 +16,20 @@ from .schemas import JobResponse
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def sniff_image_suffix(content: bytes) -> str | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return ".webp"
+    if content.startswith(b"BM"):
+        return ".bmp"
+    return None
 
 
 class JobStore:
@@ -88,6 +103,15 @@ class JobStore:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN avoid_key_name TEXT"
                     )
+        self.reference_images_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def server_home(self) -> Path:
+        return self.jobs_dir.parent
+
+    @property
+    def reference_images_dir(self) -> Path:
+        return self.server_home / "shared" / "reference-images"
 
     def create_job(
         self,
@@ -130,6 +154,80 @@ class JobStore:
                     json.dumps([]),
                 ),
             )
+        return self.get_job(job_id)
+
+    def create_job_with_reference_uploads(
+        self,
+        *,
+        job_id: Optional[str] = None,
+        prompt: str,
+        image_action: str,
+        model_override: Optional[str],
+        tool_model_override: Optional[str],
+        max_retries: int,
+        retry_delay_seconds: int,
+        reference_uploads: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        job_id = job_id or str(uuid.uuid4())
+        now = utcnow()
+        input_files: list[dict[str, Any]] = []
+        created_storage_paths: list[str] = []
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                for upload in reference_uploads:
+                    content = bytes(upload["content"])
+                    filename, storage_path, content_hash = self.prepare_reference_image(
+                        content,
+                        str(upload["suffix"]),
+                    )
+                    created = self.write_reference_image(content, storage_path)
+                    if created:
+                        created_storage_paths.append(storage_path)
+                    input_files.append(
+                        {
+                            "filename": filename,
+                            "kind": "input",
+                            "size_bytes": len(content),
+                            "storage_path": storage_path,
+                            "content_hash": content_hash,
+                            "original_filename": str(upload["original_filename"]),
+                        }
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO jobs (
+                        id, status, prompt, image_action, model_override,
+                        tool_model_override, max_retries, retry_delay_seconds,
+                        attempt_count, assigned_key_name, created_at, updated_at,
+                        started_at, finished_at, next_retry_at, last_error,
+                        avoid_key_name,
+                        input_files_json, output_files_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        "queued",
+                        prompt,
+                        image_action,
+                        model_override,
+                        tool_model_override,
+                        max_retries,
+                        retry_delay_seconds,
+                        now,
+                        now,
+                        json.dumps(input_files),
+                        json.dumps([]),
+                    ),
+                )
+            except Exception:
+                for storage_path in reversed(created_storage_paths):
+                    target = self.server_home / storage_path
+                    if target.exists():
+                        target.unlink()
+                connection.execute("ROLLBACK")
+                raise
+            connection.execute("COMMIT")
         return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> dict[str, Any]:
@@ -462,10 +560,11 @@ class JobStore:
         return self.get_job(job_id)
 
     def delete_job(self, job_id: str) -> None:
+        shared_storage_paths: list[str] = []
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT status FROM jobs WHERE id = ?",
+                "SELECT status, input_files_json FROM jobs WHERE id = ?",
                 (job_id,),
             ).fetchone()
             if row is None:
@@ -474,7 +573,15 @@ class JobStore:
             if row["status"] == "running":
                 connection.execute("ROLLBACK")
                 raise ValueError("running jobs cannot be deleted")
+            for item in json.loads(row["input_files_json"] or "[]"):
+                storage_path = item.get("storage_path")
+                if isinstance(storage_path, str) and storage_path.startswith("shared/"):
+                    shared_storage_paths.append(storage_path)
             connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            self.delete_unreferenced_shared_files(
+                shared_storage_paths,
+                connection=connection,
+            )
             connection.execute("COMMIT")
         job_dir = self.jobs_dir / job_id
         if job_dir.exists():
@@ -540,6 +647,91 @@ class JobStore:
         (job_dir / "output").mkdir(parents=True, exist_ok=True)
         (job_dir / "meta").mkdir(parents=True, exist_ok=True)
         return job_dir
+
+    def prepare_reference_image(self, content: bytes, suffix: str) -> tuple[str, str, str]:
+        digest = hashlib.sha256(content).hexdigest()
+        normalized_suffix = sniff_image_suffix(content) or suffix.lower()
+        existing = next(self.reference_images_dir.glob(f"{digest}.*"), None)
+        if existing is not None:
+            relative_path = existing.relative_to(self.server_home).as_posix()
+            return existing.name, relative_path, digest
+
+        filename = f"{digest}{normalized_suffix}"
+        relative_path = (Path("shared") / "reference-images" / filename).as_posix()
+        return filename, relative_path, digest
+
+    def write_reference_image(self, content: bytes, storage_path: str) -> bool:
+        target = self.server_home / storage_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with target.open("xb") as handle:
+                handle.write(content)
+            return True
+        except FileExistsError:
+            return False
+
+    def store_reference_image(self, content: bytes, suffix: str) -> tuple[str, str]:
+        filename, storage_path, _ = self.prepare_reference_image(content, suffix)
+        self.write_reference_image(content, storage_path)
+        return filename, storage_path
+
+    def resolve_input_file_path(self, job_id: str, item: dict[str, Any]) -> Path:
+        storage_path = item.get("storage_path")
+        if isinstance(storage_path, str) and storage_path:
+            return self.server_home / storage_path
+        return self.jobs_dir / job_id / "input" / str(item["filename"])
+
+    def resolve_job_file_path(self, job_id: str, kind: str, filename: str) -> Path:
+        if kind == "output":
+            return self.jobs_dir / job_id / kind / filename
+        job = self.get_job(job_id)
+        for item in job["input_files"]:
+            if item["kind"] == "input" and item["filename"] == filename:
+                return self.resolve_input_file_path(job_id, item)
+        return self.jobs_dir / job_id / kind / filename
+
+    def delete_unreferenced_shared_files(
+        self,
+        storage_paths: list[str],
+        *,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> None:
+        if not storage_paths:
+            return
+        remaining_paths = self.list_referenced_storage_paths(connection=connection)
+        for storage_path in sorted(set(storage_paths)):
+            if storage_path in remaining_paths:
+                continue
+            target = self.server_home / storage_path
+            if target.exists():
+                target.unlink()
+            parent = target.parent
+            while parent != self.server_home and parent.exists():
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+                parent = parent.parent
+
+    def list_referenced_storage_paths(
+        self,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> set[str]:
+        own_connection = connection is None
+        if own_connection:
+            connection_cm = self.connect()
+            connection = connection_cm.__enter__()
+        try:
+            rows = connection.execute("SELECT input_files_json FROM jobs").fetchall()
+        finally:
+            if own_connection:
+                connection_cm.__exit__(None, None, None)
+        referenced: set[str] = set()
+        for row in rows:
+            for item in json.loads(row["input_files_json"] or "[]"):
+                storage_path = item.get("storage_path")
+                if isinstance(storage_path, str) and storage_path:
+                    referenced.add(storage_path)
+        return referenced
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

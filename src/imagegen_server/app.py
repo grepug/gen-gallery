@@ -112,33 +112,34 @@ def create_app() -> FastAPI:
             )
 
         uploaded_files: list[dict[str, object]] = []
-        for index, upload in enumerate(reference_images, start=1):
+        for upload in reference_images:
             suffix = Path(upload.filename or "").suffix
             if not suffix:
                 guessed = mimetypes.guess_extension(upload.content_type or "")
                 suffix = guessed or ".bin"
-            filename = f"reference_{index}{suffix.lower()}"
+            content = await upload.read()
             uploaded_files.append(
                 {
-                    "filename": filename,
-                    "kind": "input",
-                    "size_bytes": 0,
-                    "upload": upload,
+                    "content": content,
+                    "suffix": suffix,
+                    "original_filename": upload.filename or f"reference{suffix.lower()}",
                 }
             )
+            await upload.close()
 
         job_id = str(uuid.uuid4())
-        job_dir = store.make_job_dirs(job_id)
-
-        final_input_files: list[dict[str, object]] = []
-        for item in uploaded_files:
-            upload = item.pop("upload")
-            target = job_dir / "input" / str(item["filename"])
-            content = await upload.read()
-            target.write_bytes(content)
-            item["size_bytes"] = len(content)
-            final_input_files.append(item)
-            await upload.close()
+        store.make_job_dirs(job_id)
+        job = store.create_job_with_reference_uploads(
+            job_id=job_id,
+            prompt=prompt.strip(),
+            image_action=image_action,
+            model_override=model.strip() if model else None,
+            tool_model_override=tool_model.strip() if tool_model else None,
+            max_retries=effective_max_retries,
+            retry_delay_seconds=effective_retry_delay,
+            reference_uploads=uploaded_files,
+        )
+        final_input_files = list(job["input_files"])
 
         store.write_request_meta(
             job_id,
@@ -153,20 +154,13 @@ def create_app() -> FastAPI:
                     {
                         "filename": item["filename"],
                         "size_bytes": item["size_bytes"],
+                        "storage_path": item["storage_path"],
+                        "content_hash": item["content_hash"],
+                        "original_filename": item["original_filename"],
                     }
                     for item in final_input_files
                 ],
             },
-        )
-        job = store.create_job(
-            job_id=job_id,
-            prompt=prompt.strip(),
-            image_action=image_action,
-            model_override=model.strip() if model else None,
-            tool_model_override=tool_model.strip() if tool_model else None,
-            max_retries=effective_max_retries,
-            retry_delay_seconds=effective_retry_delay,
-            input_files=final_input_files,
         )
         store.append_event(
             job_id,
@@ -250,7 +244,10 @@ def create_app() -> FastAPI:
     async def get_file(job_id: str, kind: str, filename: str) -> FileResponse:
         if kind not in {"input", "output"}:
             raise HTTPException(status_code=404, detail="invalid file kind")
-        file_path = settings.jobs_dir / job_id / kind / filename
+        try:
+            file_path = store.resolve_job_file_path(job_id, kind, filename)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="file not found")
         media_type, _ = mimetypes.guess_type(str(file_path))
@@ -287,6 +284,7 @@ def create_app() -> FastAPI:
             imported_db = extract_dir / "app.db"
             imported_jobs = extract_dir / "jobs"
             imported_logs = extract_dir / "logs"
+            imported_shared = extract_dir / "shared"
             if not imported_db.is_file():
                 raise HTTPException(status_code=400, detail="archive is missing app.db")
             if not imported_jobs.is_dir():
@@ -300,6 +298,7 @@ def create_app() -> FastAPI:
                 imported_db,
                 imported_jobs,
                 imported_logs if imported_logs.is_dir() else None,
+                imported_shared if imported_shared.is_dir() else None,
             )
             store.initialize()
             if worker_was_running:
@@ -344,6 +343,7 @@ def _replace_runtime_data(
     imported_db: Path,
     imported_jobs: Path,
     imported_logs: Optional[Path],
+    imported_shared: Optional[Path],
 ) -> None:
     destinations = [
         (imported_db, server_home / "app.db"),
@@ -351,6 +351,8 @@ def _replace_runtime_data(
     ]
     if imported_logs is not None:
         destinations.append((imported_logs, server_home / "logs"))
+    if imported_shared is not None:
+        destinations.append((imported_shared, server_home / "shared"))
 
     for _, destination in destinations:
         if destination.exists():
