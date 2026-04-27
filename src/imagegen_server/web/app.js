@@ -4,7 +4,8 @@ const PREVIEW_MIN_ZOOM = 1;
 const PREVIEW_MAX_ZOOM = 5.5;
 const PREVIEW_WHEEL_ZOOM_SENSITIVITY = 0.0022;
 const PREVIEW_PINCH_ZOOM_SENSITIVITY = 0.0036;
-const PREVIEW_SAFARI_PINCH_DPI_WEIGHT = 0.2;
+const PREVIEW_SAFARI_PINCH_DPI_WEIGHT = 0.24;
+const PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER = 1.08;
 const PREVIEW_DEFAULT_DPI_WEIGHT = 0.12;
 const PREVIEW_SAFARI_SCROLL_DAMPING = 0.9;
 const PREVIEW_SAFARI_SCROLL_BREAKPOINT = 28;
@@ -660,9 +661,9 @@ function bindEvents() {
       const isZoomGesture = state.previewZoom <= 1.001 || isPinchGesture || event.altKey;
 
       if (isZoomGesture) {
-        const baseSensitivity = isPinchGesture
-          ? PREVIEW_PINCH_ZOOM_SENSITIVITY
-          : PREVIEW_WHEEL_ZOOM_SENSITIVITY;
+        const baseSensitivity =
+          (isPinchGesture ? PREVIEW_PINCH_ZOOM_SENSITIVITY : PREVIEW_WHEEL_ZOOM_SENSITIVITY) *
+          (IS_SAFARI && isPinchGesture ? PREVIEW_SAFARI_PINCH_SENSITIVITY_MULTIPLIER : 1);
         const dpiWeight =
           IS_SAFARI && isPinchGesture ? PREVIEW_SAFARI_PINCH_DPI_WEIGHT : PREVIEW_DEFAULT_DPI_WEIGHT;
         const dpiBoost = 1 + Math.min(window.devicePixelRatio || 1, 3) * dpiWeight;
