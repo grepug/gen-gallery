@@ -88,10 +88,15 @@ def load_settings() -> Settings:
     database_path = server_home / "app.db"
     jobs_dir = server_home / "jobs"
     logs_dir = server_home / "logs"
+    platform_port = os.environ.get("PORT", "").strip()
+    app_port_raw = os.environ.get("APP_PORT", "").strip() or platform_port or "8000"
+    app_host = os.environ.get("APP_HOST", "").strip()
+    if not app_host:
+        app_host = "0.0.0.0" if platform_port else "127.0.0.1"
 
     settings = Settings(
-        app_host=os.environ.get("APP_HOST", "127.0.0.1"),
-        app_port=_require_int("APP_PORT", 8000, minimum=1),
+        app_host=app_host,
+        app_port=_require_int("APP_PORT", int(app_port_raw), minimum=1),
         server_home=server_home,
         database_path=database_path,
         jobs_dir=jobs_dir,

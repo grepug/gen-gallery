@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_HOME="${IMAGEGEN_SERVER_HOME:-$HOME/.imagegen-server}"
 VENV_PATH="$SERVER_HOME/venv"
 PID_PATH="$SERVER_HOME/server.pid"
@@ -36,6 +37,7 @@ if [[ -f "$PID_PATH" ]] && kill -0 "$(cat "$PID_PATH")" 2>/dev/null; then
 fi
 
 source "$VENV_PATH/bin/activate"
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 nohup python -m imagegen_server > "$LOG_PATH" 2>&1 &
 echo $! > "$PID_PATH"
 echo "imagegen-server started on ${APP_HOST:-127.0.0.1}:${APP_PORT:-8000}"
