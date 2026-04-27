@@ -152,6 +152,58 @@ class ReferenceImageDedupeTests(unittest.TestCase):
             store.delete_job(job_ids[1])
             self.assertFalse(shared_path.exists())
 
+    def test_failed_create_does_not_leak_new_shared_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_home = Path(temp_dir)
+            jobs_dir = server_home / "jobs"
+            store = JobStore(server_home / "app.db", jobs_dir)
+            store.initialize()
+
+            image_bytes = (
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+            )
+            job_id = str(uuid.uuid4())
+            store.make_job_dirs(job_id)
+            store.create_job_with_reference_uploads(
+                job_id=job_id,
+                prompt="first",
+                image_action="edit",
+                model_override=None,
+                tool_model_override=None,
+                max_retries=0,
+                retry_delay_seconds=60,
+                reference_uploads=[
+                    {
+                        "content": b"not the same image",
+                        "suffix": ".bin",
+                        "original_filename": "seed.bin",
+                    }
+                ],
+            )
+
+            duplicate_storage = store.prepare_reference_image(image_bytes, ".png")[1]
+            with self.assertRaises(Exception):
+                store.create_job_with_reference_uploads(
+                    job_id=job_id,
+                    prompt="duplicate id",
+                    image_action="edit",
+                    model_override=None,
+                    tool_model_override=None,
+                    max_retries=0,
+                    retry_delay_seconds=60,
+                    reference_uploads=[
+                        {
+                            "content": image_bytes,
+                            "suffix": ".png",
+                            "original_filename": "duplicate.png",
+                        }
+                    ],
+                )
+
+            self.assertFalse((server_home / duplicate_storage).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

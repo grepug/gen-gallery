@@ -171,51 +171,62 @@ class JobStore:
         job_id = job_id or str(uuid.uuid4())
         now = utcnow()
         input_files: list[dict[str, Any]] = []
+        created_storage_paths: list[str] = []
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for upload in reference_uploads:
-                content = bytes(upload["content"])
-                filename, storage_path, content_hash = self.prepare_reference_image(
-                    content,
-                    str(upload["suffix"]),
+            try:
+                for upload in reference_uploads:
+                    content = bytes(upload["content"])
+                    filename, storage_path, content_hash = self.prepare_reference_image(
+                        content,
+                        str(upload["suffix"]),
+                    )
+                    created = self.write_reference_image(content, storage_path)
+                    if created:
+                        created_storage_paths.append(storage_path)
+                    input_files.append(
+                        {
+                            "filename": filename,
+                            "kind": "input",
+                            "size_bytes": len(content),
+                            "storage_path": storage_path,
+                            "content_hash": content_hash,
+                            "original_filename": str(upload["original_filename"]),
+                        }
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO jobs (
+                        id, status, prompt, image_action, model_override,
+                        tool_model_override, max_retries, retry_delay_seconds,
+                        attempt_count, assigned_key_name, created_at, updated_at,
+                        started_at, finished_at, next_retry_at, last_error,
+                        avoid_key_name,
+                        input_files_json, output_files_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        "queued",
+                        prompt,
+                        image_action,
+                        model_override,
+                        tool_model_override,
+                        max_retries,
+                        retry_delay_seconds,
+                        now,
+                        now,
+                        json.dumps(input_files),
+                        json.dumps([]),
+                    ),
                 )
-                self.write_reference_image(content, storage_path)
-                input_files.append(
-                    {
-                        "filename": filename,
-                        "kind": "input",
-                        "size_bytes": len(content),
-                        "storage_path": storage_path,
-                        "content_hash": content_hash,
-                        "original_filename": str(upload["original_filename"]),
-                    }
-                )
-            connection.execute(
-                """
-                INSERT INTO jobs (
-                    id, status, prompt, image_action, model_override,
-                    tool_model_override, max_retries, retry_delay_seconds,
-                    attempt_count, assigned_key_name, created_at, updated_at,
-                    started_at, finished_at, next_retry_at, last_error,
-                    avoid_key_name,
-                    input_files_json, output_files_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
-                """,
-                (
-                    job_id,
-                    "queued",
-                    prompt,
-                    image_action,
-                    model_override,
-                    tool_model_override,
-                    max_retries,
-                    retry_delay_seconds,
-                    now,
-                    now,
-                    json.dumps(input_files),
-                    json.dumps([]),
-                ),
-            )
+            except Exception:
+                for storage_path in reversed(created_storage_paths):
+                    target = self.server_home / storage_path
+                    if target.exists():
+                        target.unlink()
+                connection.execute("ROLLBACK")
+                raise
             connection.execute("COMMIT")
         return self.get_job(job_id)
 
@@ -522,11 +533,14 @@ class JobStore:
                 if isinstance(storage_path, str) and storage_path.startswith("shared/"):
                     shared_storage_paths.append(storage_path)
             connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            self.delete_unreferenced_shared_files(
+                shared_storage_paths,
+                connection=connection,
+            )
             connection.execute("COMMIT")
         job_dir = self.jobs_dir / job_id
         if job_dir.exists():
             shutil.rmtree(job_dir)
-        self.delete_unreferenced_shared_files(shared_storage_paths)
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         now = utcnow()
@@ -601,14 +615,15 @@ class JobStore:
         relative_path = (Path("shared") / "reference-images" / filename).as_posix()
         return filename, relative_path, digest
 
-    def write_reference_image(self, content: bytes, storage_path: str) -> None:
+    def write_reference_image(self, content: bytes, storage_path: str) -> bool:
         target = self.server_home / storage_path
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             with target.open("xb") as handle:
                 handle.write(content)
+            return True
         except FileExistsError:
-            pass
+            return False
 
     def store_reference_image(self, content: bytes, suffix: str) -> tuple[str, str]:
         filename, storage_path, _ = self.prepare_reference_image(content, suffix)
@@ -630,10 +645,15 @@ class JobStore:
                 return self.resolve_input_file_path(job_id, item)
         return self.jobs_dir / job_id / kind / filename
 
-    def delete_unreferenced_shared_files(self, storage_paths: list[str]) -> None:
+    def delete_unreferenced_shared_files(
+        self,
+        storage_paths: list[str],
+        *,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> None:
         if not storage_paths:
             return
-        remaining_paths = self.list_referenced_storage_paths()
+        remaining_paths = self.list_referenced_storage_paths(connection=connection)
         for storage_path in sorted(set(storage_paths)):
             if storage_path in remaining_paths:
                 continue
@@ -647,9 +667,19 @@ class JobStore:
                 parent.rmdir()
                 parent = parent.parent
 
-    def list_referenced_storage_paths(self) -> set[str]:
-        with self.connect() as connection:
+    def list_referenced_storage_paths(
+        self,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> set[str]:
+        own_connection = connection is None
+        if own_connection:
+            connection_cm = self.connect()
+            connection = connection_cm.__enter__()
+        try:
             rows = connection.execute("SELECT input_files_json FROM jobs").fetchall()
+        finally:
+            if own_connection:
+                connection_cm.__exit__(None, None, None)
         referenced: set[str] = set()
         for row in rows:
             for item in json.loads(row["input_files_json"] or "[]"):
