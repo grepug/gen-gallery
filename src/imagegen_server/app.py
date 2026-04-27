@@ -5,8 +5,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
 from .schemas import CreateJobResponse, HealthResponse, JobListResponse, JobResponse
@@ -15,6 +16,7 @@ from .worker import WorkerPool
 
 
 def create_app() -> FastAPI:
+    web_dir = Path(__file__).with_name("web")
     settings = load_settings()
     store = JobStore(settings.database_path, settings.jobs_dir)
     store.initialize()
@@ -24,6 +26,7 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.store = store
     app.state.worker_pool = worker_pool
+    app.mount("/ui", StaticFiles(directory=web_dir, html=True), name="ui")
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -36,6 +39,10 @@ def create_app() -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", worker_count=worker_pool.worker_count)
+
+    @app.get("/")
+    async def index() -> FileResponse:
+        return FileResponse(web_dir / "index.html")
 
     @app.post("/jobs", response_model=CreateJobResponse, status_code=201)
     async def create_job(
@@ -148,10 +155,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="job not found") from exc
         return job_to_response(job, str(request.base_url).rstrip("/"))
 
+    @app.post("/jobs/{job_id}/retry", response_model=JobResponse)
+    async def retry_job(job_id: str, request: Request) -> JobResponse:
+        try:
+            job = store.retry_failed_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job_to_response(job, str(request.base_url).rstrip("/"))
+
+    @app.delete("/jobs/{job_id}", status_code=204)
+    async def delete_job(job_id: str) -> Response:
+        try:
+            store.delete_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return Response(status_code=204)
+
     @app.get("/jobs", response_model=JobListResponse)
     async def list_jobs(
         request: Request,
-        limit: int = Query(20, ge=1, le=100),
+        limit: int = Query(20, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> JobListResponse:
         jobs, total = store.list_jobs(limit=limit, offset=offset)

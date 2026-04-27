@@ -5,9 +5,21 @@ SERVER_HOME="${IMAGEGEN_SERVER_HOME:-$HOME/.imagegen-server}"
 VENV_PATH="$SERVER_HOME/venv"
 PID_PATH="$SERVER_HOME/server.pid"
 LOG_PATH="$SERVER_HOME/logs/server.log"
+ENV_PATH="$SERVER_HOME/server.env"
+
+if [[ -f "$ENV_PATH" ]]; then
+  set -a
+  source "$ENV_PATH"
+  set +a
+fi
 
 if [[ -z "${IMAGE_API_KEYS_JSON:-}" ]]; then
   echo "IMAGE_API_KEYS_JSON is required in the environment." >&2
+  exit 1
+fi
+
+if [[ -z "${OPENAI_BASE_URL:-}" ]]; then
+  echo "OPENAI_BASE_URL is required in the environment." >&2
   exit 1
 fi
 

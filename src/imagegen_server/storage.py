@@ -7,6 +7,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 from typing import Any, Iterator, Optional
 
 from .schemas import JobResponse
@@ -310,6 +311,68 @@ class JobStore:
                 """,
                 (json.dumps(input_files), now, job_id),
             )
+
+    def retry_failed_job(self, job_id: str) -> dict[str, Any]:
+        now = utcnow()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                raise KeyError(job_id)
+            if row["status"] != "failed":
+                connection.execute("ROLLBACK")
+                raise ValueError("only failed jobs can be retried")
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued',
+                    attempt_count = 0,
+                    assigned_key_name = NULL,
+                    updated_at = ?,
+                    started_at = NULL,
+                    finished_at = NULL,
+                    next_retry_at = NULL,
+                    last_error = NULL,
+                    avoid_key_name = NULL,
+                    output_files_json = ?
+                WHERE id = ?
+                """,
+                (now, json.dumps([]), job_id),
+            )
+            connection.execute("COMMIT")
+
+        output_dir = self.jobs_dir / job_id / "output"
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+        result_meta = self.jobs_dir / job_id / "meta" / "result.json"
+        if result_meta.exists():
+            result_meta.unlink()
+        self.append_event(job_id, "manual_retry_requested")
+        return self.get_job(job_id)
+
+    def delete_job(self, job_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                raise KeyError(job_id)
+            if row["status"] == "running":
+                connection.execute("ROLLBACK")
+                raise ValueError("running jobs cannot be deleted")
+            connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            connection.execute("COMMIT")
+        job_dir = self.jobs_dir / job_id
+        if job_dir.exists():
+            shutil.rmtree(job_dir)
 
     def append_event(
         self,

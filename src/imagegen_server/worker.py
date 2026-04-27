@@ -101,7 +101,7 @@ class WorkerPool:
                         "attempt_count": job["attempt_count"],
                         "failed_key_name": context.key_config.name,
                         "retryable": exc.retryable,
-                        "retry_on_other_key": exc.retry_on_other_key,
+                        "immediate_retry_on_other_key": exc.immediate_retry_on_other_key,
                         "error": str(exc),
                     },
                 )
@@ -110,8 +110,9 @@ class WorkerPool:
                     await asyncio.to_thread(context.store.mark_failed, job_id, str(exc))
                     return
 
+                retry_delay_seconds = self._compute_retry_delay_seconds(job, exc)
                 retry_at_dt = datetime.now(timezone.utc) + timedelta(
-                    seconds=job["retry_delay_seconds"]
+                    seconds=retry_delay_seconds
                 )
                 retry_at = retry_at_dt.isoformat()
                 await asyncio.to_thread(
@@ -129,6 +130,8 @@ class WorkerPool:
                         "attempt_count": job["attempt_count"],
                         "failed_key_name": context.key_config.name,
                         "retry_at": retry_at,
+                        "retry_delay_seconds": retry_delay_seconds,
+                        "immediate_retry_on_other_key": exc.immediate_retry_on_other_key,
                         "avoid_key_name": context.key_config.name,
                     },
                 )
@@ -178,3 +181,15 @@ class WorkerPool:
                 },
             )
             return
+
+    def _compute_retry_delay_seconds(
+        self,
+        job: dict,
+        error: ImageGenerationError,
+    ) -> int:
+        if error.immediate_retry_on_other_key:
+            return 0
+        base_delay = int(job["retry_delay_seconds"])
+        attempt_count = int(job["attempt_count"])
+        retry_index = max(attempt_count, 1)
+        return base_delay * retry_index

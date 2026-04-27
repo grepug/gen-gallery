@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -32,32 +31,6 @@ class Settings:
     poll_interval_seconds: float
 
 
-def _load_codex_provider_defaults(config_path: Path) -> tuple[str, str]:
-    text = config_path.read_text(encoding="utf-8")
-
-    provider_match = re.search(r'^model_provider\s*=\s*"([^"]+)"', text, re.M)
-    model_match = re.search(r'^model\s*=\s*"([^"]+)"', text, re.M)
-    provider_key = provider_match.group(1) if provider_match else "OpenAI"
-    model = model_match.group(1) if model_match else "gpt-5.4"
-
-    block_pattern = (
-        r'^\[model_providers\.%s\]\n(.*?)(?:\n\[|\Z)' % re.escape(provider_key)
-    )
-    provider_block = re.search(block_pattern, text, re.M | re.S)
-    if not provider_block:
-        raise RuntimeError(f"Model provider block not found for '{provider_key}'.")
-
-    base_url_match = re.search(
-        r'^base_url\s*=\s*"([^"]+)"',
-        provider_block.group(1),
-        re.M,
-    )
-    if not base_url_match:
-        raise RuntimeError(f"base_url not found for model provider '{provider_key}'.")
-
-    return model, base_url_match.group(1).rstrip("/")
-
-
 def _require_int(name: str, default: int, minimum: int = 0) -> int:
     raw = os.environ.get(name, str(default))
     try:
@@ -66,6 +39,13 @@ def _require_int(name: str, default: int, minimum: int = 0) -> int:
         raise RuntimeError(f"{name} must be an integer.") from exc
     if value < minimum:
         raise RuntimeError(f"{name} must be >= {minimum}.")
+    return value
+
+
+def _require_str(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required.")
     return value
 
 
@@ -102,10 +82,6 @@ def _parse_api_keys(raw: Optional[str]) -> list[ApiKeyConfig]:
 
 
 def load_settings() -> Settings:
-    codex_config_path = Path(
-        os.environ.get("CODEX_CONFIG_PATH", str(Path.home() / ".codex" / "config.toml"))
-    ).expanduser()
-    default_model, default_base_url = _load_codex_provider_defaults(codex_config_path)
     server_home = Path(
         os.environ.get("IMAGEGEN_SERVER_HOME", str(Path.home() / ".imagegen-server"))
     ).expanduser()
@@ -120,15 +96,15 @@ def load_settings() -> Settings:
         database_path=database_path,
         jobs_dir=jobs_dir,
         logs_dir=logs_dir,
-        openai_base_url=os.environ.get("OPENAI_BASE_URL", default_base_url).rstrip("/"),
-        openai_model=os.environ.get("OPENAI_MODEL", default_model),
+        openai_base_url=_require_str("OPENAI_BASE_URL").rstrip("/"),
+        openai_model=os.environ.get("OPENAI_MODEL", "gpt-5.5").strip() or "gpt-5.5",
         openai_image_tool_model=os.environ.get(
             "OPENAI_IMAGE_TOOL_MODEL", "gpt-image-2"
         ),
         api_keys=_parse_api_keys(os.environ.get("IMAGE_API_KEYS_JSON")),
-        job_max_retries=_require_int("JOB_MAX_RETRIES", 1, minimum=0),
+        job_max_retries=_require_int("JOB_MAX_RETRIES", 2, minimum=0),
         job_retry_delay_seconds=_require_int(
-            "JOB_RETRY_DELAY_SECONDS", 15, minimum=1
+            "JOB_RETRY_DELAY_SECONDS", 60, minimum=1
         ),
         job_timeout_seconds=_require_int("JOB_TIMEOUT_SECONDS", 600, minimum=1),
         poll_interval_seconds=float(os.environ.get("JOB_POLL_INTERVAL_SECONDS", "1.0")),

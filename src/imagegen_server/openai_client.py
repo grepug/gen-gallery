@@ -22,11 +22,11 @@ class ImageGenerationError(RuntimeError):
         self,
         message: str,
         retryable: bool,
-        retry_on_other_key: bool = False,
+        immediate_retry_on_other_key: bool = False,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
-        self.retry_on_other_key = retry_on_other_key
+        self.immediate_retry_on_other_key = immediate_retry_on_other_key
 
 
 def summarize_stream_error(event: dict) -> str:
@@ -164,12 +164,12 @@ def generate_image(
                     break
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        retry_on_other_key = exc.code in {401, 403, 429}
-        retryable = exc.code >= 500 or retry_on_other_key
+        immediate_retry_on_other_key = exc.code in {401, 403}
+        retryable = exc.code >= 500 or exc.code in {401, 403, 429}
         raise ImageGenerationError(
             f"Responses request failed with HTTP {exc.code}: {body}",
             retryable=retryable,
-            retry_on_other_key=retry_on_other_key,
+            immediate_retry_on_other_key=immediate_retry_on_other_key,
         ) from exc
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
         raise ImageGenerationError(

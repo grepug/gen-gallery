@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Imagegen Gallery</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="title-block">
+          <p class="eyebrow">Local image generation</p>
+          <h1>Gallery</h1>
+        </div>
+        <div class="toolbar">
+          <div class="status-summary" id="status-summary">
+            <span class="summary-pill">Loading</span>
+          </div>
+          <button class="ghost-button" id="refresh-button" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <section class="filter-bar" aria-label="Job filters">
+        <div class="filter-group" id="filter-group">
+          <button class="filter-chip is-active" data-filter="all" type="button">All</button>
+          <button class="filter-chip" data-filter="active" type="button">Active</button>
+          <button class="filter-chip" data-filter="succeeded" type="button">Succeeded</button>
+          <button class="filter-chip" data-filter="failed" type="button">Failed</button>
+        </div>
+        <div class="polling-indicator" id="polling-indicator">Idle</div>
+      </section>
+
+      <main class="workspace">
+        <section class="gallery-panel">
+          <div class="gallery-grid" id="gallery-grid" aria-live="polite"></div>
+          <div class="empty-state hidden" id="gallery-empty">
+            <h2>No jobs match this filter</h2>
+            <p>Try another filter, or wait for the queue to produce more images.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="viewer-modal hidden" id="viewer-modal" aria-hidden="true">
+      <div class="viewer-backdrop" id="viewer-backdrop"></div>
+      <div class="viewer-shell" aria-modal="true" role="dialog" aria-label="Image viewer">
+        <div class="viewer-topbar">
+          <div>
+            <p class="eyebrow">Image viewer</p>
+            <h2 class="viewer-title">Selected job</h2>
+          </div>
+          <div class="viewer-actions">
+            <button class="ghost-button" id="viewer-fullscreen-button" type="button">Fullscreen</button>
+            <button class="ghost-button" id="viewer-close-button" type="button">Close</button>
+          </div>
+        </div>
+
+        <div class="detail-empty hidden" id="detail-empty">
+          <h2>Select a job</h2>
+          <p>Choose an image from the gallery to open the viewer.</p>
+        </div>
+
+        <div class="detail-content hidden" id="detail-content">
+          <div class="detail-strip" id="detail-strip" aria-label="Nearby jobs"></div>
+
+          <div class="detail-preview-column">
+            <div class="preview-toolbar">
+              <div class="view-mode-group" id="view-mode-group" aria-label="Image fit mode">
+                <button class="view-mode-button is-active" data-view-mode="fit" type="button">Fit</button>
+                <button class="view-mode-button" data-view-mode="fill" type="button">Fill</button>
+              </div>
+            </div>
+            <div class="detail-preview-frame">
+              <img class="detail-preview hidden" id="detail-preview" alt="" />
+              <div class="detail-placeholder hidden" id="detail-placeholder"></div>
+            </div>
+          </div>
+
+          <aside class="detail-sidebar">
+            <div class="detail-head">
+              <div>
+                <p class="detail-label">Selected job</p>
+                <h2 class="detail-title" id="detail-title">Job</h2>
+              </div>
+              <span class="status-pill" id="detail-status">Status</span>
+            </div>
+
+            <section class="detail-prompt-panel">
+              <div class="detail-prompt-head">
+                <p class="detail-label">Prompt</p>
+                <button class="ghost-button prompt-toggle hidden" id="detail-prompt-toggle" type="button">
+                  Show full
+                </button>
+              </div>
+              <p class="detail-prompt-preview" id="detail-prompt-preview"></p>
+              <div class="detail-prompt-full hidden" id="detail-prompt-full">
+                <p class="detail-prompt-scroll" id="detail-prompt-scroll"></p>
+              </div>
+            </section>
+
+            <section class="reference-block hidden" id="detail-reference">
+              <div class="reference-head">
+                <p class="detail-label">Reference</p>
+              </div>
+              <img class="reference-image" id="detail-reference-image" alt="Reference image" />
+            </section>
+
+            <dl class="meta-grid" id="meta-grid"></dl>
+
+            <div class="action-row">
+              <button class="primary-button hidden" id="retry-button" type="button">Retry</button>
+              <button class="danger-button" id="delete-button" type="button">Delete</button>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <p class="toast hidden" id="global-message" role="status"></p>
+
+    <script src="/ui/app.js" defer></script>
+  </body>
+</html>

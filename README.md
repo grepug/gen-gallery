@@ -38,12 +38,11 @@ Optional variables:
 export APP_HOST=127.0.0.1
 export APP_PORT=8000
 export IMAGEGEN_SERVER_HOME="$HOME/.imagegen-server"
-export CODEX_CONFIG_PATH="$HOME/.codex/config.toml"
-export OPENAI_BASE_URL="..."   # optional override; defaults from CODEX_CONFIG_PATH
-export OPENAI_MODEL="..."      # optional override; defaults from CODEX_CONFIG_PATH
+export OPENAI_BASE_URL="https://api.example.com/v1"
+export OPENAI_MODEL="gpt-5.5"
 export OPENAI_IMAGE_TOOL_MODEL="gpt-image-2"
-export JOB_MAX_RETRIES=1
-export JOB_RETRY_DELAY_SECONDS=15
+export JOB_MAX_RETRIES=2
+export JOB_RETRY_DELAY_SECONDS=60
 export JOB_TIMEOUT_SECONDS=600
 ```
 
@@ -59,8 +58,12 @@ Recommended local setup:
 
 ```bash
 export IMAGE_API_KEYS_JSON='[{"name":"key-a","api_key":"sk-..."}]'
+export OPENAI_BASE_URL='https://api.example.com/v1'
 ./scripts/start.sh
 ```
+
+You can also keep a persistent environment file at `~/.imagegen-server/server.env`.
+`scripts/start.sh` auto-loads it before starting the server.
 
 Stop it with:
 
