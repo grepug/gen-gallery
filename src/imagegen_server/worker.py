@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+from .config import ApiKeyConfig, Settings
+from .openai_client import ImageGenerationError, generate_image
+from .storage import JobStore, utcnow
+
+
+@dataclass
+class WorkerContext:
+    key_config: ApiKeyConfig
+    settings: Settings
+    store: JobStore
+
+
+class WorkerPool:
+    def __init__(self, settings: Settings, store: JobStore) -> None:
+        self.settings = settings
+        self.store = store
+        self._key_order = [key_config.name for key_config in settings.api_keys]
+        self._tasks: list[asyncio.Task] = []
+        self._stop_event = asyncio.Event()
+
+    async def start(self) -> None:
+        self._stop_event.clear()
+        for key_config in self.settings.api_keys:
+            context = WorkerContext(
+                key_config=key_config,
+                settings=self.settings,
+                store=self.store,
+            )
+            task = asyncio.create_task(
+                self._worker_loop(context),
+                name=f"worker-{key_config.name}",
+            )
+            self._tasks.append(task)
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+
+    @property
+    def worker_count(self) -> int:
+        return len(self.settings.api_keys)
+
+    async def _worker_loop(self, context: WorkerContext) -> None:
+        while not self._stop_event.is_set():
+            job = await asyncio.to_thread(
+                context.store.claim_next_job,
+                context.key_config.name,
+                self._key_order,
+            )
+            if job is None:
+                await asyncio.sleep(context.settings.poll_interval_seconds)
+                continue
+
+            await self._run_job(context, job)
+
+    async def _run_job(self, context: WorkerContext, job: dict) -> None:
+        while True:
+            job_id = job["id"]
+            await asyncio.to_thread(
+                context.store.append_event,
+                job_id,
+                "attempt_started",
+                {
+                    "attempt_count": job["attempt_count"],
+                    "key_name": context.key_config.name,
+                },
+            )
+
+            try:
+                result = await asyncio.to_thread(
+                    generate_image,
+                    base_url=context.settings.openai_base_url,
+                    api_key=context.key_config.api_key,
+                    model=job["model"] or context.settings.openai_model,
+                    tool_model=job["tool_model"]
+                    or context.settings.openai_image_tool_model,
+                    image_action=job["image_action"],
+                    prompt=job["prompt"],
+                    reference_images=[
+                        context.settings.jobs_dir / job_id / "input" / item["filename"]
+                        for item in job["input_files"]
+                    ],
+                    timeout_seconds=context.settings.job_timeout_seconds,
+                )
+            except ImageGenerationError as exc:
+                await asyncio.to_thread(
+                    context.store.append_event,
+                    job_id,
+                    "attempt_failed",
+                    {
+                        "attempt_count": job["attempt_count"],
+                        "failed_key_name": context.key_config.name,
+                        "retryable": exc.retryable,
+                        "retry_on_other_key": exc.retry_on_other_key,
+                        "error": str(exc),
+                    },
+                )
+                should_retry = exc.retryable and job["attempt_count"] <= job["max_retries"]
+                if not should_retry:
+                    await asyncio.to_thread(context.store.mark_failed, job_id, str(exc))
+                    return
+
+                retry_at_dt = datetime.now(timezone.utc) + timedelta(
+                    seconds=job["retry_delay_seconds"]
+                )
+                retry_at = retry_at_dt.isoformat()
+                await asyncio.to_thread(
+                    context.store.mark_retry_waiting,
+                    job_id,
+                    str(exc),
+                    retry_at,
+                    context.key_config.name,
+                )
+                await asyncio.to_thread(
+                    context.store.append_event,
+                    job_id,
+                    "attempt_requeued",
+                    {
+                        "attempt_count": job["attempt_count"],
+                        "failed_key_name": context.key_config.name,
+                        "retry_at": retry_at,
+                        "avoid_key_name": context.key_config.name,
+                    },
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                await asyncio.to_thread(
+                    context.store.append_event,
+                    job_id,
+                    "attempt_failed",
+                    {
+                        "attempt_count": job["attempt_count"],
+                        "retryable": False,
+                        "error": str(exc),
+                    },
+                )
+                await asyncio.to_thread(context.store.mark_failed, job_id, str(exc))
+                return
+
+            output_dir = context.settings.jobs_dir / job_id / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / "result.png"
+            output_path.write_bytes(result.image_bytes)
+            output_files = [
+                {
+                    "filename": output_path.name,
+                    "kind": "output",
+                    "size_bytes": output_path.stat().st_size,
+                }
+            ]
+            await asyncio.to_thread(context.store.mark_succeeded, job_id, output_files)
+            await asyncio.to_thread(
+                context.store.write_result_meta,
+                job_id,
+                {
+                    "finished_at": utcnow(),
+                    "output_files": output_files,
+                    "seen_events": result.seen_events,
+                },
+            )
+            await asyncio.to_thread(
+                context.store.append_event,
+                job_id,
+                "attempt_succeeded",
+                {
+                    "attempt_count": job["attempt_count"],
+                    "output_filename": output_path.name,
+                },
+            )
+            return
