@@ -100,10 +100,9 @@ button {
   font-size: 28px;
 }
 
-.toolbar,
 .filter-controls,
 .filter-group,
-.status-summary {
+.filter-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -111,14 +110,16 @@ button {
 }
 
 .filter-controls {
-  justify-content: space-between;
   flex: 1 1 auto;
+  justify-content: space-between;
 }
 
-.summary-pill,
+.filter-actions {
+  justify-content: flex-end;
+}
+
 .filter-chip,
 .ghost-button,
-.polling-indicator,
 .primary-button,
 .danger-button,
 .status-pill {
@@ -126,14 +127,6 @@ button {
   border: 1px solid transparent;
   transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease,
     transform 180ms ease;
-}
-
-.summary-pill,
-.polling-indicator {
-  padding: 8px 12px;
-  background: var(--surface);
-  border-color: var(--border);
-  color: var(--text-soft);
 }
 
 .filter-bar {
@@ -836,6 +829,12 @@ button {
 
   .filter-controls {
     width: 100%;
+    justify-content: flex-start;
+  }
+
+  .filter-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .viewer-shell {

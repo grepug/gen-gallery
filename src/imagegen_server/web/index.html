@@ -13,12 +13,6 @@
           <p class="eyebrow">Local image generation</p>
           <h1>Gallery</h1>
         </div>
-        <div class="toolbar">
-          <div class="status-summary" id="status-summary">
-            <span class="summary-pill">Loading</span>
-          </div>
-          <button class="ghost-button" id="refresh-button" type="button">Refresh</button>
-        </div>
       </header>
 
       <section class="filter-bar" aria-label="Job filters">
@@ -31,17 +25,19 @@
             <button class="filter-chip" data-filter="active" data-label="Active" type="button">Active</button>
             <button class="filter-chip" data-filter="failed" data-label="Failed" type="button">Failed</button>
           </div>
-          <label class="sort-control" for="sort-select">
-            <span>Sort</span>
-            <select class="sort-select" id="sort-select">
-              <option value="created_desc">Created newest</option>
-              <option value="created_asc">Created oldest</option>
-              <option value="updated_desc">Updated newest</option>
-              <option value="updated_asc">Updated oldest</option>
-            </select>
-          </label>
+          <div class="filter-actions">
+            <label class="sort-control" for="sort-select">
+              <span>Sort</span>
+              <select class="sort-select" id="sort-select">
+                <option value="created_desc">Created newest</option>
+                <option value="created_asc">Created oldest</option>
+                <option value="updated_desc">Updated newest</option>
+                <option value="updated_asc">Updated oldest</option>
+              </select>
+            </label>
+            <button class="ghost-button" id="refresh-button" type="button">Refresh</button>
+          </div>
         </div>
-        <div class="polling-indicator" id="polling-indicator">Idle</div>
       </section>
 
       <main class="workspace">

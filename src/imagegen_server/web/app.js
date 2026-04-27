@@ -35,8 +35,6 @@ const state = {
   previewTransformRaf: null,
   previewWheelTimer: null,
   galleryLayoutRaf: null,
-  pollingTimer: null,
-  pollingMode: "idle",
 };
 
 const els = {
@@ -69,8 +67,6 @@ const els = {
   globalMessage: document.getElementById("global-message"),
   filterGroup: document.getElementById("filter-group"),
   sortSelect: document.getElementById("sort-select"),
-  pollingIndicator: document.getElementById("polling-indicator"),
-  statusSummary: document.getElementById("status-summary"),
   refreshButton: document.getElementById("refresh-button"),
 };
 
@@ -261,23 +257,6 @@ async function toggleImmersiveMode() {
   } else {
     await enterImmersiveMode();
   }
-}
-
-function renderSummary() {
-  const counts = jobCounts();
-
-  els.statusSummary.innerHTML = "";
-  [
-    ["Active", counts.active],
-    ["Succeeded", counts.succeeded],
-    ["Failed", counts.failed],
-    ["Canceled", counts.canceled],
-  ].forEach(([label, value]) => {
-    const pill = document.createElement("span");
-    pill.className = "summary-pill";
-    pill.textContent = `${label} ${value}`;
-    els.statusSummary.appendChild(pill);
-  });
 }
 
 function syncGalleryMasonry() {
@@ -676,31 +655,11 @@ async function mutateJob(path, options) {
   await fetchJobs({ preserveSelection: true });
 }
 
-function updatePollingIndicator() {
-  els.pollingIndicator.textContent =
-    state.pollingMode === "active" ? "Live polling" : "Low-frequency refresh";
-}
-
-function schedulePolling() {
-  window.clearTimeout(state.pollingTimer);
-  const hasActive = state.jobs.some((job) => ACTIVE_STATUSES.has(job.status));
-  state.pollingMode = hasActive ? "active" : "idle";
-  updatePollingIndicator();
-  const delay = hasActive ? 2500 : 30000;
-  state.pollingTimer = window.setTimeout(() => {
-    fetchJobs({ preserveSelection: true }).catch((error) =>
-      setMessage(error.message),
-    );
-  }, delay);
-}
-
 function render() {
   ensureSelection();
   renderFilterBar();
-  renderSummary();
   renderGallery();
   renderDetail();
-  schedulePolling();
 }
 
 async function fetchJobs({ preserveSelection = false } = {}) {
