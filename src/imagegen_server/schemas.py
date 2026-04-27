@@ -59,3 +59,8 @@ class CreateJobResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     worker_count: int
+
+
+class ImportArchiveResponse(BaseModel):
+    status: str
+    imported_job_count: int

@@ -1,16 +1,38 @@
 from __future__ import annotations
 
+import asyncio
 import mimetypes
+import os
+import shutil
+import sqlite3
+import tarfile
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import load_settings
-from .schemas import CreateJobResponse, HealthResponse, JobListResponse, JobResponse
+from .schemas import (
+    CreateJobResponse,
+    HealthResponse,
+    ImportArchiveResponse,
+    JobListResponse,
+    JobResponse,
+)
 from .storage import JobStore, job_to_response
 from .worker import WorkerPool
 
@@ -211,4 +233,113 @@ def create_app() -> FastAPI:
         media_type, _ = mimetypes.guess_type(str(file_path))
         return FileResponse(file_path, media_type=media_type or "application/octet-stream")
 
+    @app.post("/admin/import-archive", response_model=ImportArchiveResponse)
+    async def import_archive(
+        archive: UploadFile = File(...),
+        import_token: Optional[str] = Header(None, alias="X-Import-Token"),
+    ) -> ImportArchiveResponse:
+        expected_token = os.environ.get("DATA_IMPORT_TOKEN", "").strip()
+        if not expected_token:
+            raise HTTPException(status_code=404, detail="not found")
+        if import_token != expected_token:
+            raise HTTPException(status_code=401, detail="invalid import token")
+
+        temp_root = Path(tempfile.mkdtemp(prefix="archive-import-", dir=settings.server_home))
+        extract_dir = temp_root / "extract"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = temp_root / "import.tar.gz"
+        worker_was_running = bool(worker_pool._tasks)
+        workers_restarted = False
+
+        try:
+            with archive_path.open("wb") as handle:
+                while True:
+                    chunk = await archive.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            await archive.close()
+
+            await asyncio.to_thread(_extract_archive, archive_path, extract_dir)
+            imported_db = extract_dir / "app.db"
+            imported_jobs = extract_dir / "jobs"
+            imported_logs = extract_dir / "logs"
+            if not imported_db.is_file():
+                raise HTTPException(status_code=400, detail="archive is missing app.db")
+            if not imported_jobs.is_dir():
+                raise HTTPException(status_code=400, detail="archive is missing jobs/")
+
+            imported_job_count = await asyncio.to_thread(_count_jobs, imported_db)
+            await worker_pool.stop()
+            await asyncio.to_thread(
+                _replace_runtime_data,
+                settings.server_home,
+                imported_db,
+                imported_jobs,
+                imported_logs if imported_logs.is_dir() else None,
+            )
+            store.initialize()
+            if worker_was_running:
+                await worker_pool.start()
+                workers_restarted = True
+            return ImportArchiveResponse(
+                status="ok",
+                imported_job_count=imported_job_count,
+            )
+        finally:
+            if worker_was_running and not workers_restarted and not worker_pool._tasks:
+                await worker_pool.start()
+            if archive and not archive.file.closed:
+                await archive.close()
+            if temp_root.exists():
+                shutil.rmtree(temp_root, ignore_errors=True)
+
     return app
+
+
+def _extract_archive(archive_path: Path, extract_dir: Path) -> None:
+    root = extract_dir.resolve()
+    with tarfile.open(archive_path, "r:*") as archive:
+        for member in archive.getmembers():
+            target = (extract_dir / member.name).resolve()
+            if target != root and root not in target.parents:
+                raise RuntimeError("archive contains invalid paths")
+        for member in archive.getmembers():
+            archive.extract(member, extract_dir)
+
+
+def _count_jobs(database_path: Path) -> int:
+    connection = sqlite3.connect(database_path)
+    try:
+        return int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def _replace_runtime_data(
+    server_home: Path,
+    imported_db: Path,
+    imported_jobs: Path,
+    imported_logs: Optional[Path],
+) -> None:
+    destinations = [
+        (imported_db, server_home / "app.db"),
+        (imported_jobs, server_home / "jobs"),
+    ]
+    if imported_logs is not None:
+        destinations.append((imported_logs, server_home / "logs"))
+
+    for _, destination in destinations:
+        if destination.exists():
+            if destination.is_dir():
+                for child in sorted(destination.rglob("*"), reverse=True):
+                    if child.is_file() or child.is_symlink():
+                        child.unlink(missing_ok=True)
+                    elif child.is_dir():
+                        child.rmdir()
+                destination.rmdir()
+            else:
+                destination.unlink()
+
+    for source, destination in destinations:
+        source.replace(destination)
