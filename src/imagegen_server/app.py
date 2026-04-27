@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import mimetypes
 import os
 import shutil
@@ -118,24 +117,28 @@ def create_app() -> FastAPI:
                 guessed = mimetypes.guess_extension(upload.content_type or "")
                 suffix = guessed or ".bin"
             content = await upload.read()
-            digest = hashlib.sha256(content).hexdigest()
-            filename, storage_path = store.store_reference_image(content, suffix)
             uploaded_files.append(
                 {
-                    "filename": filename,
-                    "kind": "input",
-                    "size_bytes": len(content),
-                    "storage_path": storage_path,
-                    "content_hash": digest,
-                    "original_filename": upload.filename or filename,
+                    "content": content,
+                    "suffix": suffix,
+                    "original_filename": upload.filename or f"reference{suffix.lower()}",
                 }
             )
             await upload.close()
 
         job_id = str(uuid.uuid4())
         store.make_job_dirs(job_id)
-
-        final_input_files: list[dict[str, object]] = list(uploaded_files)
+        job = store.create_job_with_reference_uploads(
+            job_id=job_id,
+            prompt=prompt.strip(),
+            image_action=image_action,
+            model_override=model.strip() if model else None,
+            tool_model_override=tool_model.strip() if tool_model else None,
+            max_retries=effective_max_retries,
+            retry_delay_seconds=effective_retry_delay,
+            reference_uploads=uploaded_files,
+        )
+        final_input_files = list(job["input_files"])
 
         store.write_request_meta(
             job_id,
@@ -157,16 +160,6 @@ def create_app() -> FastAPI:
                     for item in final_input_files
                 ],
             },
-        )
-        job = store.create_job(
-            job_id=job_id,
-            prompt=prompt.strip(),
-            image_action=image_action,
-            model_override=model.strip() if model else None,
-            tool_model_override=tool_model.strip() if tool_model else None,
-            max_retries=effective_max_retries,
-            retry_delay_seconds=effective_retry_delay,
-            input_files=final_input_files,
         )
         store.append_event(
             job_id,

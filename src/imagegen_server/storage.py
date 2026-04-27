@@ -18,6 +18,20 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def sniff_image_suffix(content: bytes) -> str | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return ".webp"
+    if content.startswith(b"BM"):
+        return ".bmp"
+    return None
+
+
 class JobStore:
     def __init__(self, database_path: Path, jobs_dir: Path) -> None:
         self.database_path = database_path
@@ -140,6 +154,69 @@ class JobStore:
                     json.dumps([]),
                 ),
             )
+        return self.get_job(job_id)
+
+    def create_job_with_reference_uploads(
+        self,
+        *,
+        job_id: Optional[str] = None,
+        prompt: str,
+        image_action: str,
+        model_override: Optional[str],
+        tool_model_override: Optional[str],
+        max_retries: int,
+        retry_delay_seconds: int,
+        reference_uploads: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        job_id = job_id or str(uuid.uuid4())
+        now = utcnow()
+        input_files: list[dict[str, Any]] = []
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for upload in reference_uploads:
+                content = bytes(upload["content"])
+                filename, storage_path, content_hash = self.prepare_reference_image(
+                    content,
+                    str(upload["suffix"]),
+                )
+                self.write_reference_image(content, storage_path)
+                input_files.append(
+                    {
+                        "filename": filename,
+                        "kind": "input",
+                        "size_bytes": len(content),
+                        "storage_path": storage_path,
+                        "content_hash": content_hash,
+                        "original_filename": str(upload["original_filename"]),
+                    }
+                )
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, status, prompt, image_action, model_override,
+                    tool_model_override, max_retries, retry_delay_seconds,
+                    attempt_count, assigned_key_name, created_at, updated_at,
+                    started_at, finished_at, next_retry_at, last_error,
+                    avoid_key_name,
+                    input_files_json, output_files_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                """,
+                (
+                    job_id,
+                    "queued",
+                    prompt,
+                    image_action,
+                    model_override,
+                    tool_model_override,
+                    max_retries,
+                    retry_delay_seconds,
+                    now,
+                    now,
+                    json.dumps(input_files),
+                    json.dumps([]),
+                ),
+            )
+            connection.execute("COMMIT")
         return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> dict[str, Any]:
@@ -512,24 +589,31 @@ class JobStore:
         (job_dir / "meta").mkdir(parents=True, exist_ok=True)
         return job_dir
 
-    def store_reference_image(self, content: bytes, suffix: str) -> tuple[str, str]:
+    def prepare_reference_image(self, content: bytes, suffix: str) -> tuple[str, str, str]:
         digest = hashlib.sha256(content).hexdigest()
-        normalized_suffix = suffix.lower()
+        normalized_suffix = sniff_image_suffix(content) or suffix.lower()
         existing = next(self.reference_images_dir.glob(f"{digest}.*"), None)
         if existing is not None:
             relative_path = existing.relative_to(self.server_home).as_posix()
-            return existing.name, relative_path
+            return existing.name, relative_path, digest
 
         filename = f"{digest}{normalized_suffix}"
-        target = self.reference_images_dir / filename
+        relative_path = (Path("shared") / "reference-images" / filename).as_posix()
+        return filename, relative_path, digest
+
+    def write_reference_image(self, content: bytes, storage_path: str) -> None:
+        target = self.server_home / storage_path
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             with target.open("xb") as handle:
                 handle.write(content)
         except FileExistsError:
             pass
-        relative_path = target.relative_to(self.server_home).as_posix()
-        return filename, relative_path
+
+    def store_reference_image(self, content: bytes, suffix: str) -> tuple[str, str]:
+        filename, storage_path, _ = self.prepare_reference_image(content, suffix)
+        self.write_reference_image(content, storage_path)
+        return filename, storage_path
 
     def resolve_input_file_path(self, job_id: str, item: dict[str, Any]) -> Path:
         storage_path = item.get("storage_path")

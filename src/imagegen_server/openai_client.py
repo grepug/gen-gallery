@@ -71,9 +71,9 @@ def sniff_image_mime_type(image_bytes: bytes) -> str | None:
 
 def make_data_url(image_path: Path) -> str:
     image_bytes = image_path.read_bytes()
-    mime_type, _ = mimetypes.guess_type(str(image_path))
-    if not mime_type or not mime_type.startswith("image/"):
-        mime_type = sniff_image_mime_type(image_bytes)
+    mime_type = sniff_image_mime_type(image_bytes)
+    if not mime_type:
+        mime_type, _ = mimetypes.guess_type(str(image_path))
     if not mime_type or not mime_type.startswith("image/"):
         raise ImageGenerationError(
             f"Could not determine an image MIME type for '{image_path}'.",
