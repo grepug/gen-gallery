@@ -174,6 +174,10 @@ function resetPreviewViewport() {
   state.previewDragging = null;
 }
 
+function clampUnit(value) {
+  return Math.max(-1, Math.min(1, value));
+}
+
 function setImmersiveChromeVisible(visible) {
   state.immersiveChromeVisible = visible;
   els.viewerModal.classList.toggle(
@@ -433,27 +437,37 @@ function renderImageViewMode(hasOutputImage) {
   );
 }
 
+function previewLayout() {
+  if (els.detailPreview.classList.contains("hidden")) return null;
+
+  const naturalWidth = els.detailPreview.naturalWidth;
+  const naturalHeight = els.detailPreview.naturalHeight;
+  const frameWidth = els.detailPreviewFrame.clientWidth;
+  const frameHeight = els.detailPreviewFrame.clientHeight;
+  if (!naturalWidth || !naturalHeight || !frameWidth || !frameHeight) return null;
+
+  const fittedScale =
+    state.imageViewMode === "fill"
+      ? Math.max(frameWidth / naturalWidth, frameHeight / naturalHeight)
+      : Math.min(frameWidth / naturalWidth, frameHeight / naturalHeight, 1);
+
+  return {
+    frameWidth,
+    frameHeight,
+    renderWidth: naturalWidth * fittedScale * state.previewZoom,
+    renderHeight: naturalHeight * fittedScale * state.previewZoom,
+  };
+}
+
 function clampPreviewPan() {
-  if (
-    state.previewZoom <= 1 ||
-    els.detailPreview.classList.contains("hidden")
-  ) {
+  const layout = previewLayout();
+  if (state.previewZoom <= 1 || !layout) {
     state.previewPanX = 0;
     state.previewPanY = 0;
     return;
   }
-  const maxX = Math.max(
-    0,
-    (els.detailPreview.clientWidth * state.previewZoom -
-      els.detailPreview.clientWidth) /
-      2,
-  );
-  const maxY = Math.max(
-    0,
-    (els.detailPreview.clientHeight * state.previewZoom -
-      els.detailPreview.clientHeight) /
-      2,
-  );
+  const maxX = Math.max(0, (layout.renderWidth - layout.frameWidth) / 2);
+  const maxY = Math.max(0, (layout.renderHeight - layout.frameHeight) / 2);
   state.previewPanX = Math.max(-maxX, Math.min(maxX, state.previewPanX));
   state.previewPanY = Math.max(-maxY, Math.min(maxY, state.previewPanY));
 }
@@ -461,6 +475,7 @@ function clampPreviewPan() {
 function zoomPreview(nextZoom, anchorClientX = null, anchorClientY = null) {
   const hasImage = !els.detailPreview.classList.contains("hidden");
   if (!hasImage) return;
+  const currentLayout = previewLayout();
 
   const clampedZoom = Math.max(
     PREVIEW_MIN_ZOOM,
@@ -477,12 +492,28 @@ function zoomPreview(nextZoom, anchorClientX = null, anchorClientY = null) {
   const centerY = frameRect.top + frameRect.height / 2;
   const anchorOffsetX = (anchorClientX ?? centerX) - centerX;
   const anchorOffsetY = (anchorClientY ?? centerY) - centerY;
-  const localX = (anchorOffsetX - state.previewPanX) / state.previewZoom;
-  const localY = (anchorOffsetY - state.previewPanY) / state.previewZoom;
+  const relativeX =
+    currentLayout && currentLayout.renderWidth > 0
+      ? clampUnit(
+          (anchorOffsetX - state.previewPanX) / (currentLayout.renderWidth / 2),
+        )
+      : 0;
+  const relativeY =
+    currentLayout && currentLayout.renderHeight > 0
+      ? clampUnit(
+          (anchorOffsetY - state.previewPanY) /
+            (currentLayout.renderHeight / 2),
+        )
+      : 0;
 
   state.previewZoom = clampedZoom;
-  state.previewPanX = anchorOffsetX - clampedZoom * localX;
-  state.previewPanY = anchorOffsetY - clampedZoom * localY;
+  const nextLayout = previewLayout();
+  if (nextLayout) {
+    state.previewPanX =
+      anchorOffsetX - relativeX * (nextLayout.renderWidth / 2);
+    state.previewPanY =
+      anchorOffsetY - relativeY * (nextLayout.renderHeight / 2);
+  }
   schedulePreviewTransform();
 }
 
@@ -502,11 +533,24 @@ function tunePreviewPanDelta(delta, event) {
 
 function syncPreviewTransform() {
   state.previewTransformRaf = null;
-  clampPreviewPan();
   const hasImage = !els.detailPreview.classList.contains("hidden");
-  els.detailPreview.style.transform = hasImage
-    ? `translate(${state.previewPanX}px, ${state.previewPanY}px) scale(${state.previewZoom})`
-    : "";
+  const layout = hasImage ? previewLayout() : null;
+  clampPreviewPan();
+  if (layout) {
+    els.detailPreview.style.width = `${layout.renderWidth}px`;
+    els.detailPreview.style.height = `${layout.renderHeight}px`;
+    els.detailPreview.style.maxWidth = "none";
+    els.detailPreview.style.maxHeight = "none";
+  } else {
+    els.detailPreview.style.width = "";
+    els.detailPreview.style.height = "";
+    els.detailPreview.style.maxWidth = "";
+    els.detailPreview.style.maxHeight = "";
+  }
+  els.detailPreview.style.transform =
+    hasImage && layout
+      ? `translate(${state.previewPanX}px, ${state.previewPanY}px)`
+      : "";
   const zoomed = hasImage && state.previewZoom > 1.001;
   els.detailPreview.classList.toggle("is-zoomed", zoomed);
   els.detailPreviewFrame.classList.toggle("is-zoomed", zoomed);
@@ -722,6 +766,7 @@ function bindEvents() {
     render();
   });
   window.addEventListener("resize", scheduleGalleryMasonry);
+  window.addEventListener("resize", schedulePreviewTransform);
 
   els.refreshButton.addEventListener("click", () => {
     fetchJobs({ preserveSelection: true }).catch((error) =>
@@ -799,6 +844,13 @@ function bindEvents() {
     } else {
       zoomPreview(2.2, event.clientX, event.clientY);
     }
+  });
+
+  els.detailPreview.addEventListener("load", () => {
+    if (state.previewZoom <= 1) {
+      resetPreviewViewport();
+    }
+    schedulePreviewTransform();
   });
 
   els.detailPreviewFrame.addEventListener("mousedown", (event) => {
