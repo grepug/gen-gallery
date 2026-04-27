@@ -10,10 +10,17 @@ const PREVIEW_DEFAULT_DPI_WEIGHT = 0.12;
 const PREVIEW_SAFARI_SCROLL_DAMPING = 0.9;
 const PREVIEW_SAFARI_SCROLL_BREAKPOINT = 28;
 const PREVIEW_SAFARI_SCROLL_TAIL_RATIO = 0.45;
+const SORT_OPTIONS = {
+  created_desc: { field: "created_at", direction: "desc" },
+  created_asc: { field: "created_at", direction: "asc" },
+  updated_desc: { field: "updated_at", direction: "desc" },
+  updated_asc: { field: "updated_at", direction: "asc" },
+};
 
 const state = {
   jobs: [],
-  filter: "all",
+  filter: "succeeded",
+  sort: "created_desc",
   selectedId: null,
   modalOpen: false,
   immersiveMode: false,
@@ -56,9 +63,11 @@ const els = {
   detailReferenceImage: document.getElementById("detail-reference-image"),
   metaGrid: document.getElementById("meta-grid"),
   retryButton: document.getElementById("retry-button"),
+  cancelButton: document.getElementById("cancel-button"),
   deleteButton: document.getElementById("delete-button"),
   globalMessage: document.getElementById("global-message"),
   filterGroup: document.getElementById("filter-group"),
+  sortSelect: document.getElementById("sort-select"),
   pollingIndicator: document.getElementById("polling-indicator"),
   statusSummary: document.getElementById("status-summary"),
   refreshButton: document.getElementById("refresh-button"),
@@ -103,16 +112,46 @@ function referenceFile(job) {
   return null;
 }
 
-function filteredJobs() {
-  if (state.filter === "all") return state.jobs;
-  if (state.filter === "active") {
-    return state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
-  }
-  return state.jobs.filter((job) => job.status === state.filter);
+function jobCounts() {
+  return {
+    all: state.jobs.length,
+    active: state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length,
+    failed: state.jobs.filter((job) => job.status === "failed").length,
+    succeeded: state.jobs.filter((job) => job.status === "succeeded").length,
+    canceled: state.jobs.filter((job) => job.status === "canceled").length,
+  };
 }
 
-function currentSelectedIndex() {
-  return filteredJobs().findIndex((job) => job.id === state.selectedId);
+function sortJobs(jobs) {
+  const option = SORT_OPTIONS[state.sort] || SORT_OPTIONS.created_desc;
+  const direction = option.direction === "asc" ? 1 : -1;
+  return [...jobs].sort((left, right) => {
+    const leftValue = left[option.field] || "";
+    const rightValue = right[option.field] || "";
+    if (leftValue === rightValue) return 0;
+    return leftValue > rightValue ? direction : -direction;
+  });
+}
+
+function filteredJobs() {
+  let jobs = state.jobs;
+  if (state.filter === "active") {
+    jobs = state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status));
+  } else if (state.filter !== "all") {
+    jobs = state.jobs.filter((job) => job.status === state.filter);
+  }
+  return sortJobs(jobs);
+}
+
+function renderFilterBar() {
+  const counts = jobCounts();
+  [...els.filterGroup.querySelectorAll("[data-filter]")].forEach((button) => {
+    const filter = button.dataset.filter;
+    const label = button.dataset.label || filter;
+    button.textContent = `${label}(${counts[filter] ?? 0})`;
+    button.classList.toggle("is-active", filter === state.filter);
+  });
+  els.sortSelect.value = state.sort;
 }
 
 function ensureSelection() {
@@ -125,6 +164,10 @@ function ensureSelection() {
   if (!jobs.some((job) => job.id === state.selectedId)) {
     state.selectedId = jobs[0].id;
   }
+}
+
+function currentSelectedIndex() {
+  return filteredJobs().findIndex((job) => job.id === state.selectedId);
 }
 
 function resetPreviewViewport() {
@@ -220,17 +263,14 @@ async function toggleImmersiveMode() {
 }
 
 function renderSummary() {
-  const counts = {
-    active: state.jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length,
-    failed: state.jobs.filter((job) => job.status === "failed").length,
-    succeeded: state.jobs.filter((job) => job.status === "succeeded").length,
-  };
+  const counts = jobCounts();
 
   els.statusSummary.innerHTML = "";
   [
     ["Active", counts.active],
     ["Succeeded", counts.succeeded],
     ["Failed", counts.failed],
+    ["Canceled", counts.canceled],
   ].forEach(([label, value]) => {
     const pill = document.createElement("span");
     pill.className = "summary-pill";
@@ -259,8 +299,13 @@ function renderGallery() {
     } else {
       const placeholder = document.createElement("div");
       placeholder.className = "card-placeholder";
-      placeholder.textContent =
-        job.status === "failed" ? "No generated image" : "Waiting for image";
+      if (job.status === "failed") {
+        placeholder.textContent = "No generated image";
+      } else if (job.status === "canceled") {
+        placeholder.textContent = "Canceled before image output";
+      } else {
+        placeholder.textContent = "Waiting for image";
+      }
       card.appendChild(placeholder);
     }
 
@@ -309,7 +354,13 @@ function renderDetailStrip(selectedJob, jobs) {
     } else {
       const fallback = document.createElement("div");
       fallback.className = "thumb-fallback";
-      fallback.textContent = job.status === "failed" ? "Failed" : "Pending";
+      if (job.status === "failed") {
+        fallback.textContent = "Failed";
+      } else if (job.status === "canceled") {
+        fallback.textContent = "Canceled";
+      } else {
+        fallback.textContent = "Pending";
+      }
       thumb.appendChild(fallback);
     }
 
@@ -512,10 +563,16 @@ function renderDetail() {
     els.detailPreview.removeAttribute("src");
     els.detailPreview.classList.add("hidden");
     els.detailPlaceholder.classList.remove("hidden");
-    els.detailPlaceholder.textContent =
-      selectedJob.status === "failed"
-        ? "This job did not produce a generated image."
-        : "This job has not produced a generated image yet.";
+    if (selectedJob.status === "failed") {
+      els.detailPlaceholder.textContent =
+        "This job did not produce a generated image.";
+    } else if (selectedJob.status === "canceled") {
+      els.detailPlaceholder.textContent =
+        "This job was canceled before it produced a generated image.";
+    } else {
+      els.detailPlaceholder.textContent =
+        "This job has not produced a generated image yet.";
+    }
   }
   renderImageViewMode(Boolean(file));
   syncPreviewTransform();
@@ -528,11 +585,12 @@ function renderDetail() {
   renderMeta(selectedJob);
 
   const canRetry = selectedJob.status === "failed";
-  const canDelete = selectedJob.status !== "running";
+  const canCancel = ACTIVE_STATUSES.has(selectedJob.status);
+  const canDelete = !canCancel;
 
   els.retryButton.classList.toggle("hidden", !canRetry);
-  els.deleteButton.disabled = !canDelete;
-  els.deleteButton.textContent = canDelete ? "Delete" : "Delete unavailable";
+  els.cancelButton.classList.toggle("hidden", !canCancel);
+  els.deleteButton.classList.toggle("hidden", !canDelete);
 
   els.retryButton.onclick = async () => {
     try {
@@ -540,6 +598,19 @@ function renderDetail() {
       state.promptExpanded = false;
       resetPreviewViewport();
       setMessage("Job requeued.");
+    } catch (error) {
+      setMessage(error.message);
+    }
+  };
+
+  els.cancelButton.onclick = async () => {
+    const confirmed = window.confirm(
+      "Cancel this job? The canceled record will stay in the gallery.",
+    );
+    if (!confirmed) return;
+    try {
+      await mutateJob(`/jobs/${selectedJob.id}/cancel`, { method: "POST" });
+      setMessage("Job canceled.");
     } catch (error) {
       setMessage(error.message);
     }
@@ -598,6 +669,7 @@ function schedulePolling() {
 
 function render() {
   ensureSelection();
+  renderFilterBar();
   renderSummary();
   renderGallery();
   renderDetail();
@@ -612,10 +684,6 @@ async function fetchJobs({ preserveSelection = false } = {}) {
   }
   const payload = await response.json();
   state.jobs = payload.items;
-
-  if (!preserveSelection && state.jobs.length && !state.selectedId) {
-    state.selectedId = state.jobs[0].id;
-  }
 
   ensureSelection();
   render();
@@ -660,9 +728,11 @@ function bindEvents() {
     const button = event.target.closest("[data-filter]");
     if (!button) return;
     state.filter = button.dataset.filter;
-    [...els.filterGroup.querySelectorAll(".filter-chip")].forEach((chip) => {
-      chip.classList.toggle("is-active", chip === button);
-    });
+    render();
+  });
+
+  els.sortSelect.addEventListener("change", () => {
+    state.sort = els.sortSelect.value;
     render();
   });
 

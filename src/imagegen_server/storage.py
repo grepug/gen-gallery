@@ -142,6 +142,16 @@ class JobStore:
             raise KeyError(job_id)
         return self._decode_row(row)
 
+    def get_job_status(self, job_id: str) -> str:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return str(row["status"])
+
     def list_jobs(self, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -243,10 +253,10 @@ class JobStore:
         error_message: str,
         next_retry_at: str,
         failed_key_name: str,
-    ) -> None:
+    ) -> bool:
         now = utcnow()
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE jobs
                 SET status = 'retry_waiting',
@@ -256,14 +266,16 @@ class JobStore:
                     avoid_key_name = ?,
                     updated_at = ?
                 WHERE id = ?
+                  AND status = 'running'
                 """,
                 (failed_key_name, error_message, next_retry_at, failed_key_name, now, job_id),
             )
+        return cursor.rowcount > 0
 
-    def mark_failed(self, job_id: str, error_message: str) -> None:
+    def mark_failed(self, job_id: str, error_message: str) -> bool:
         now = utcnow()
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE jobs
                 SET status = 'failed',
@@ -273,18 +285,20 @@ class JobStore:
                     next_retry_at = NULL,
                     avoid_key_name = NULL
                 WHERE id = ?
+                  AND status = 'running'
                 """,
                 (error_message, now, now, job_id),
             )
+        return cursor.rowcount > 0
 
     def mark_succeeded(
         self,
         job_id: str,
         output_files: list[dict[str, Any]],
-    ) -> None:
+    ) -> bool:
         now = utcnow()
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE jobs
                 SET status = 'succeeded',
@@ -295,9 +309,11 @@ class JobStore:
                     avoid_key_name = NULL,
                     output_files_json = ?
                 WHERE id = ?
+                  AND status = 'running'
                 """,
                 (now, now, json.dumps(output_files), job_id),
             )
+        return cursor.rowcount > 0
 
     def update_input_files(self, job_id: str, input_files: list[dict[str, Any]]) -> None:
         now = utcnow()
@@ -373,6 +389,37 @@ class JobStore:
         job_dir = self.jobs_dir / job_id
         if job_dir.exists():
             shutil.rmtree(job_dir)
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        now = utcnow()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                raise KeyError(job_id)
+            if row["status"] not in {"queued", "retry_waiting", "running"}:
+                connection.execute("ROLLBACK")
+                raise ValueError("only queued, active, or retry-waiting jobs can be canceled")
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'canceled',
+                    updated_at = ?,
+                    finished_at = ?,
+                    next_retry_at = NULL,
+                    avoid_key_name = NULL,
+                    last_error = ?
+                WHERE id = ?
+                """,
+                (now, now, "Canceled by user.", job_id),
+            )
+            connection.execute("COMMIT")
+        self.append_event(job_id, "manual_cancel_requested")
+        return self.get_job(job_id)
 
     def append_event(
         self,

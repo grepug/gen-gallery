@@ -165,6 +165,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return job_to_response(job, str(request.base_url).rstrip("/"))
 
+    @app.post("/jobs/{job_id}/cancel", response_model=JobResponse)
+    async def cancel_job(job_id: str, request: Request) -> JobResponse:
+        try:
+            job = store.cancel_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job_to_response(job, str(request.base_url).rstrip("/"))
+
     @app.delete("/jobs/{job_id}", status_code=204)
     async def delete_job(job_id: str) -> Response:
         try:

@@ -115,13 +115,15 @@ class WorkerPool:
                     seconds=retry_delay_seconds
                 )
                 retry_at = retry_at_dt.isoformat()
-                await asyncio.to_thread(
+                did_requeue = await asyncio.to_thread(
                     context.store.mark_retry_waiting,
                     job_id,
                     str(exc),
                     retry_at,
                     context.key_config.name,
                 )
+                if not did_requeue:
+                    return
                 await asyncio.to_thread(
                     context.store.append_event,
                     job_id,
@@ -150,6 +152,19 @@ class WorkerPool:
                 await asyncio.to_thread(context.store.mark_failed, job_id, str(exc))
                 return
 
+            current_status = await asyncio.to_thread(context.store.get_job_status, job_id)
+            if current_status == "canceled":
+                await asyncio.to_thread(
+                    context.store.append_event,
+                    job_id,
+                    "attempt_discarded_after_cancel",
+                    {
+                        "attempt_count": job["attempt_count"],
+                        "key_name": context.key_config.name,
+                    },
+                )
+                return
+
             output_dir = context.settings.jobs_dir / job_id / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "result.png"
@@ -161,7 +176,22 @@ class WorkerPool:
                     "size_bytes": output_path.stat().st_size,
                 }
             ]
-            await asyncio.to_thread(context.store.mark_succeeded, job_id, output_files)
+            did_succeed = await asyncio.to_thread(
+                context.store.mark_succeeded, job_id, output_files
+            )
+            if not did_succeed:
+                if output_path.exists():
+                    output_path.unlink()
+                await asyncio.to_thread(
+                    context.store.append_event,
+                    job_id,
+                    "attempt_discarded_after_cancel",
+                    {
+                        "attempt_count": job["attempt_count"],
+                        "key_name": context.key_config.name,
+                    },
+                )
+                return
             await asyncio.to_thread(
                 context.store.write_result_meta,
                 job_id,

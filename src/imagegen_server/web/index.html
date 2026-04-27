@@ -22,11 +22,24 @@
       </header>
 
       <section class="filter-bar" aria-label="Job filters">
-        <div class="filter-group" id="filter-group">
-          <button class="filter-chip is-active" data-filter="all" type="button">All</button>
-          <button class="filter-chip" data-filter="active" type="button">Active</button>
-          <button class="filter-chip" data-filter="succeeded" type="button">Succeeded</button>
-          <button class="filter-chip" data-filter="failed" type="button">Failed</button>
+        <div class="filter-controls">
+          <div class="filter-group" id="filter-group">
+            <button class="filter-chip is-active" data-filter="succeeded" data-label="Succeeded" type="button">
+              Succeeded
+            </button>
+            <button class="filter-chip" data-filter="all" data-label="All" type="button">All</button>
+            <button class="filter-chip" data-filter="active" data-label="Active" type="button">Active</button>
+            <button class="filter-chip" data-filter="failed" data-label="Failed" type="button">Failed</button>
+          </div>
+          <label class="sort-control" for="sort-select">
+            <span>Sort</span>
+            <select class="sort-select" id="sort-select">
+              <option value="created_desc">Created newest</option>
+              <option value="created_asc">Created oldest</option>
+              <option value="updated_desc">Updated newest</option>
+              <option value="updated_asc">Updated oldest</option>
+            </select>
+          </label>
         </div>
         <div class="polling-indicator" id="polling-indicator">Idle</div>
       </section>
@@ -110,6 +123,7 @@
 
             <div class="action-row">
               <button class="primary-button hidden" id="retry-button" type="button">Retry</button>
+              <button class="ghost-button hidden" id="cancel-button" type="button">Cancel</button>
               <button class="danger-button" id="delete-button" type="button">Delete</button>
             </div>
           </aside>

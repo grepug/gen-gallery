@@ -5,7 +5,14 @@ from typing import Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 
-JobStatus = Literal["queued", "running", "retry_waiting", "succeeded", "failed"]
+JobStatus = Literal[
+    "queued",
+    "running",
+    "retry_waiting",
+    "succeeded",
+    "failed",
+    "canceled",
+]
 ImageAction = Literal["auto", "generate", "edit"]
 
 
