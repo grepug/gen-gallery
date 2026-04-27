@@ -535,8 +535,9 @@ function syncPreviewTransform() {
   state.previewTransformRaf = null;
   const hasImage = !els.detailPreview.classList.contains("hidden");
   const layout = hasImage ? previewLayout() : null;
+  const zoomed = hasImage && state.previewZoom > 1.001;
   clampPreviewPan();
-  if (layout) {
+  if (layout && zoomed) {
     els.detailPreview.style.width = `${layout.renderWidth}px`;
     els.detailPreview.style.height = `${layout.renderHeight}px`;
     els.detailPreview.style.maxWidth = "none";
@@ -551,7 +552,6 @@ function syncPreviewTransform() {
     hasImage && layout
       ? `translate(${state.previewPanX}px, ${state.previewPanY}px)`
       : "";
-  const zoomed = hasImage && state.previewZoom > 1.001;
   els.detailPreview.classList.toggle("is-zoomed", zoomed);
   els.detailPreviewFrame.classList.toggle("is-zoomed", zoomed);
   els.detailPreviewFrame.classList.toggle(
