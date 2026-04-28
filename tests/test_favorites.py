@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,70 @@ class FavoriteStorageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "only succeeded jobs can be favorited"):
             self.store.set_favorite(str(failed_job["id"]), is_favorite=True)
+
+    def test_initialize_adds_tags_column_for_existing_database(self) -> None:
+        legacy_database_path = self.server_home / "legacy.db"
+        legacy_jobs_dir = self.server_home / "legacy-jobs"
+        legacy_jobs_dir.mkdir(parents=True, exist_ok=True)
+
+        connection = sqlite3.connect(legacy_database_path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE jobs (
+                    id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    image_action TEXT NOT NULL,
+                    model_override TEXT,
+                    tool_model_override TEXT,
+                    max_retries INTEGER NOT NULL,
+                    retry_delay_seconds INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    assigned_key_name TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    next_retry_at TEXT,
+                    last_error TEXT,
+                    avoid_key_name TEXT,
+                    input_files_json TEXT NOT NULL,
+                    output_files_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO jobs (
+                    id, status, prompt, image_action, model_override,
+                    tool_model_override, max_retries, retry_delay_seconds,
+                    attempt_count, assigned_key_name, created_at, updated_at,
+                    started_at, finished_at, next_retry_at, last_error,
+                    avoid_key_name, input_files_json, output_files_json
+                ) VALUES (
+                    'legacy-job', 'succeeded', 'legacy prompt', 'generate', NULL,
+                    NULL, 2, 60, 1, NULL, '2026-04-28T00:00:00+00:00',
+                    '2026-04-28T00:00:00+00:00', NULL, '2026-04-28T00:00:00+00:00',
+                    NULL, NULL, NULL, '[]', '[]'
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated_store = JobStore(legacy_database_path, legacy_jobs_dir)
+        migrated_store.initialize()
+
+        with migrated_store.connect() as connection:
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+        self.assertIn("tags_json", columns)
+        legacy_job = migrated_store.get_job("legacy-job")
+        self.assertEqual(legacy_job["tags"], [])
 
 
 class FavoriteApiTests(unittest.IsolatedAsyncioTestCase):
