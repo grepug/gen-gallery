@@ -50,31 +50,77 @@ function buildJob(index) {
   };
 }
 
-async function mockJobs(page, totalJobs = 55) {
-  const jobs = Array.from({ length: totalJobs }, (_, index) => buildJob(index));
+function matchesStatusFilter(job, statusFilter) {
+  if (statusFilter === "all") return true;
+  if (statusFilter === "active") {
+    return ["queued", "running", "retry_waiting"].includes(job.status);
+  }
+  return job.status === statusFilter;
+}
+
+function compareJobs(left, right, sort) {
+  const [field, direction] =
+    sort === "created_asc"
+      ? ["created_at", "asc"]
+      : sort === "updated_desc"
+        ? ["updated_at", "desc"]
+        : sort === "updated_asc"
+          ? ["updated_at", "asc"]
+          : ["created_at", "desc"];
+  const leftValue = Date.parse(left[field]);
+  const rightValue = Date.parse(right[field]);
+  if (leftValue === rightValue) {
+    return direction === "asc"
+      ? left.id.localeCompare(right.id)
+      : right.id.localeCompare(left.id);
+  }
+  return direction === "asc" ? leftValue - rightValue : rightValue - leftValue;
+}
+
+function countStatuses(jobs) {
+  return jobs.reduce(
+    (counts, job) => {
+      counts[job.status] += 1;
+      return counts;
+    },
+    {
+      queued: 0,
+      running: 0,
+      retry_waiting: 0,
+      succeeded: 0,
+      failed: 0,
+      canceled: 0,
+    },
+  );
+}
+
+async function mockJobs(page, totalJobsOrItems = 55) {
+  const jobs = Array.isArray(totalJobsOrItems)
+    ? totalJobsOrItems
+    : Array.from({ length: totalJobsOrItems }, (_, index) => buildJob(index));
   await page.route("**/jobs?**", async (route) => {
     const url = new URL(route.request().url());
     const limit = Number(url.searchParams.get("limit") || 40);
     const offset = Number(url.searchParams.get("offset") || 0);
-    const items = jobs.slice(offset, offset + limit);
+    const statusFilter = url.searchParams.get("status") || "all";
+    const sort = url.searchParams.get("sort") || "created_desc";
+    const filtered = jobs
+      .filter((job) => matchesStatusFilter(job, statusFilter))
+      .sort((left, right) => compareJobs(left, right, sort));
+    const items = filtered.slice(offset, offset + limit);
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         items,
-        total: totalJobs,
+        total: filtered.length,
         limit,
         offset,
-        counts: {
-          queued: 0,
-          running: 0,
-          retry_waiting: 0,
-          succeeded: totalJobs,
-          failed: 0,
-          canceled: 0,
-        },
+        counts: countStatuses(jobs),
       }),
     });
   });
+
+  return jobs;
 }
 
 async function mockJobsWithDelay(page, totalJobs = 55, delayMs = 800) {
@@ -118,7 +164,7 @@ test("home gallery appends more jobs without rebuilding existing cards or jumpin
   await expect(cards).toHaveCount(40);
 
   const firstJobId = await cards.first().getAttribute("data-job-id");
-  expect(firstJobId).toBe("job-1");
+  expect(firstJobId).toBe("job-55");
 
   await page.evaluate(() => {
     window.__firstGalleryCardRef = document.querySelector(".gallery-card");
@@ -139,7 +185,7 @@ test("home gallery appends more jobs without rebuilding existing cards or jumpin
       Boolean(window.__firstGalleryCardRef) &&
       window.__firstGalleryCardRef.isConnected &&
       firstCard === window.__firstGalleryCardRef &&
-      firstCard?.dataset.jobId === "job-1"
+      firstCard?.dataset.jobId === "job-55"
     );
   });
   expect(firstCardPreserved).toBe(true);
@@ -250,4 +296,59 @@ test("mobile viewer keeps fullscreen modal controls easy to reach", async ({
   expect(stripBox).not.toBeNull();
   expect(stripBox.width).toBeGreaterThan(250);
   expect(stripBox.height).toBeLessThan(120);
+});
+
+test("copy and rerun creates a fresh queued job and switches to active jobs", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const jobs = await mockJobs(page, 6);
+  let duplicateCount = 0;
+
+  await page.route("**/jobs/*/duplicate", async (route) => {
+    const jobId = route.request().url().split("/jobs/")[1].split("/duplicate")[0];
+    const sourceJob = jobs.find((job) => job.id === jobId);
+    expect(sourceJob).toBeTruthy();
+    duplicateCount += 1;
+    const now = new Date(Date.UTC(2026, 3, 28, 8, duplicateCount, 0)).toISOString();
+    const duplicatedJob = {
+      ...sourceJob,
+      id: `job-copy-${duplicateCount}`,
+      status: "queued",
+      attempt_count: 0,
+      assigned_key_name: null,
+      created_at: now,
+      updated_at: now,
+      started_at: null,
+      finished_at: null,
+      next_retry_at: null,
+      last_error: null,
+      output_files: [],
+    };
+    jobs.unshift(duplicatedJob);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(duplicatedJob),
+    });
+  });
+
+  await page.goto("/");
+  await page.locator(".gallery-card").first().click();
+  await page.getByRole("button", { name: "Copy & rerun" }).click();
+
+  await expect(page.locator(".filter-chip.is-active")).toHaveAttribute(
+    "data-filter",
+    "active",
+  );
+  await expect(page.locator(".gallery-card")).toHaveCount(1);
+  await expect(page.locator("#gallery-status")).toHaveText(
+    "Showing 1 of 1 active jobs.",
+  );
+  await expect(page.locator("#detail-status")).toHaveText("queued");
+  await expect(page.locator("#detail-prompt-preview")).toContainText("Prompt 6");
+  await expect(page.locator("#detail-placeholder")).toContainText(
+    "This job has not produced a generated image yet.",
+  );
+  await expect(page.locator("#global-message")).toHaveText("Job copied and queued.");
 });

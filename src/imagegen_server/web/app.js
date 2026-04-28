@@ -80,6 +80,7 @@ const els = {
   detailReference: document.getElementById("detail-reference"),
   detailReferenceImage: document.getElementById("detail-reference-image"),
   metaGrid: document.getElementById("meta-grid"),
+  duplicateButton: document.getElementById("duplicate-button"),
   retryButton: document.getElementById("retry-button"),
   cancelButton: document.getElementById("cancel-button"),
   deleteButton: document.getElementById("delete-button"),
@@ -827,6 +828,26 @@ function renderDetail() {
   const canCancel = ACTIVE_STATUSES.has(selectedJob.status);
   const canDelete = !canCancel;
 
+  els.duplicateButton.onclick = async () => {
+    try {
+      const duplicatedJob = await requestJobMutation(
+        `/jobs/${selectedJob.id}/duplicate`,
+        { method: "POST" },
+      );
+      state.filter = "active";
+      state.selectedId = duplicatedJob.id;
+      state.modalOpen = true;
+      state.promptExpanded = false;
+      state.immersiveMode = false;
+      state.immersiveChromeVisible = true;
+      resetPreviewViewport();
+      await fetchJobs({ preserveSelection: true });
+      setMessage("Job copied and queued.");
+    } catch (error) {
+      setMessage(error.message);
+    }
+  };
+
   els.retryButton.classList.toggle("hidden", !canRetry);
   els.cancelButton.classList.toggle("hidden", !canCancel);
   els.deleteButton.classList.toggle("hidden", !canDelete);
@@ -880,12 +901,18 @@ function setMessage(message) {
 }
 
 async function mutateJob(path, options) {
+  await requestJobMutation(path, options);
+  await fetchJobs({ preserveSelection: true });
+}
+
+async function requestJobMutation(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || "Request failed");
   }
-  await fetchJobs({ preserveSelection: true });
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
 }
 
 function render({ galleryMode = "full" } = {}) {
