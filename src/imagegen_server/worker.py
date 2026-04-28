@@ -12,6 +12,7 @@ from .storage import JobStore, utcnow
 @dataclass
 class WorkerContext:
     key_config: ApiKeyConfig
+    slot_index: int
     settings: Settings
     store: JobStore
 
@@ -21,22 +22,27 @@ class WorkerPool:
         self.settings = settings
         self.store = store
         self._key_order = [key_config.name for key_config in settings.api_keys]
+        self._key_capacities = {
+            key_config.name: key_config.concurrency for key_config in settings.api_keys
+        }
         self._tasks: list[asyncio.Task] = []
         self._stop_event = asyncio.Event()
 
     async def start(self) -> None:
         self._stop_event.clear()
         for key_config in self.settings.api_keys:
-            context = WorkerContext(
-                key_config=key_config,
-                settings=self.settings,
-                store=self.store,
-            )
-            task = asyncio.create_task(
-                self._worker_loop(context),
-                name=f"worker-{key_config.name}",
-            )
-            self._tasks.append(task)
+            for slot_index in range(key_config.concurrency):
+                context = WorkerContext(
+                    key_config=key_config,
+                    slot_index=slot_index,
+                    settings=self.settings,
+                    store=self.store,
+                )
+                task = asyncio.create_task(
+                    self._worker_loop(context),
+                    name=f"worker-{key_config.name}-{slot_index + 1}",
+                )
+                self._tasks.append(task)
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -48,7 +54,7 @@ class WorkerPool:
 
     @property
     def worker_count(self) -> int:
-        return len(self.settings.api_keys)
+        return sum(key_config.concurrency for key_config in self.settings.api_keys)
 
     async def _worker_loop(self, context: WorkerContext) -> None:
         while not self._stop_event.is_set():
@@ -56,6 +62,7 @@ class WorkerPool:
                 context.store.claim_next_job,
                 context.key_config.name,
                 self._key_order,
+                self._key_capacities,
             )
             if job is None:
                 await asyncio.sleep(context.settings.poll_interval_seconds)
@@ -73,16 +80,23 @@ class WorkerPool:
                 {
                     "attempt_count": job["attempt_count"],
                     "key_name": context.key_config.name,
+                    "worker_slot": context.slot_index + 1,
+                    "transport": context.key_config.transport,
                 },
             )
 
             try:
                 result = await asyncio.to_thread(
                     generate_image,
-                    base_url=context.settings.openai_base_url,
+                    transport=context.key_config.transport,
+                    base_url=context.key_config.base_url
+                    or context.settings.openai_base_url,
                     api_key=context.key_config.api_key,
-                    model=job["model"] or context.settings.openai_model,
+                    model=job["model"]
+                    or context.key_config.model
+                    or context.settings.openai_model,
                     tool_model=job["tool_model"]
+                    or context.key_config.tool_model
                     or context.settings.openai_image_tool_model,
                     image_action=job["image_action"],
                     prompt=job["prompt"],
@@ -100,6 +114,7 @@ class WorkerPool:
                     {
                         "attempt_count": job["attempt_count"],
                         "failed_key_name": context.key_config.name,
+                        "worker_slot": context.slot_index + 1,
                         "retryable": exc.retryable,
                         "immediate_retry_on_other_key": exc.immediate_retry_on_other_key,
                         "error": str(exc),
@@ -131,6 +146,7 @@ class WorkerPool:
                     {
                         "attempt_count": job["attempt_count"],
                         "failed_key_name": context.key_config.name,
+                        "worker_slot": context.slot_index + 1,
                         "retry_at": retry_at,
                         "retry_delay_seconds": retry_delay_seconds,
                         "immediate_retry_on_other_key": exc.immediate_retry_on_other_key,
@@ -145,6 +161,7 @@ class WorkerPool:
                     "attempt_failed",
                     {
                         "attempt_count": job["attempt_count"],
+                        "worker_slot": context.slot_index + 1,
                         "retryable": False,
                         "error": str(exc),
                     },
@@ -161,6 +178,7 @@ class WorkerPool:
                     {
                         "attempt_count": job["attempt_count"],
                         "key_name": context.key_config.name,
+                        "worker_slot": context.slot_index + 1,
                     },
                 )
                 return
@@ -208,6 +226,7 @@ class WorkerPool:
                 {
                     "attempt_count": job["attempt_count"],
                     "output_filename": output_path.name,
+                    "worker_slot": context.slot_index + 1,
                 },
             )
             return

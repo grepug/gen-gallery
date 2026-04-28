@@ -6,8 +6,8 @@ Queue-backed image generation service built around the `imagegen` OpenAI Respons
 
 - Accepts image generation jobs over HTTP
 - Stores jobs and runtime files under `~/.imagegen-server/`
-- Runs one worker per configured API key
-- Keeps each key at concurrency `1`
+- Runs one worker slot per configured key concurrency
+- Supports mixed key transports in the same shared queue
 - Retries transient upstream failures with a fixed delay
 - Exposes job status and generated files over HTTP
 
@@ -28,9 +28,28 @@ Override with `IMAGEGEN_SERVER_HOME` if needed.
 ```bash
 export IMAGE_API_KEYS_JSON='[
   {"name":"key-a","api_key":"sk-..."},
-  {"name":"key-b","api_key":"sk-..."}
+  {"name":"key-b","api_key":"sk-..."},
+  {
+    "name":"sdk-key",
+    "api_key":"sk-...",
+    "transport":"openai_sdk",
+    "base_url":"https://lingsuan.nmyh.cc/v1",
+    "tool_model":"gpt-image-2",
+    "concurrency":5
+  }
 ]'
 ```
+
+Legacy key entries only need `name` and `api_key` and continue using the existing raw
+Responses HTTP path at concurrency `1`.
+
+Optional per-key fields:
+
+- `transport`: `responses_http` (default) or `openai_sdk`
+- `base_url`: overrides the global `OPENAI_BASE_URL` for that key
+- `model`: overrides the global `OPENAI_MODEL` for that key
+- `tool_model`: overrides the global `OPENAI_IMAGE_TOOL_MODEL` for that key
+- `concurrency`: number of worker slots for that key, default `1`
 
 Optional variables:
 
@@ -57,7 +76,18 @@ Recommended local setup:
 ## Run
 
 ```bash
-export IMAGE_API_KEYS_JSON='[{"name":"key-a","api_key":"sk-..."}]'
+export IMAGE_API_KEYS_JSON='[
+  {"name":"legacy-a","api_key":"sk-..."},
+  {"name":"legacy-b","api_key":"sk-..."},
+  {
+    "name":"sdk-key",
+    "api_key":"sk-...",
+    "transport":"openai_sdk",
+    "base_url":"https://lingsuan.nmyh.cc/v1",
+    "tool_model":"gpt-image-2",
+    "concurrency":5
+  }
+]'
 export OPENAI_BASE_URL='https://api.example.com/v1'
 ./scripts/start.sh
 ```

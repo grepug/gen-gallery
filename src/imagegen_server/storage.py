@@ -389,23 +389,29 @@ class JobStore:
         self,
         key_name: str,
         key_order: list[str],
+        key_capacities: dict[str, int],
     ) -> Optional[dict[str, Any]]:
         now = utcnow()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            busy_keys = {
-                row["assigned_key_name"]
+            running_counts = {
+                str(row["assigned_key_name"]): int(row["count"])
                 for row in connection.execute(
                     """
-                    SELECT DISTINCT assigned_key_name
+                    SELECT assigned_key_name, COUNT(*) AS count
                     FROM jobs
                     WHERE status = 'running'
                       AND assigned_key_name IS NOT NULL
+                    GROUP BY assigned_key_name
                     """
                 ).fetchall()
                 if row["assigned_key_name"]
             }
-            available_keys = [candidate for candidate in key_order if candidate not in busy_keys]
+            available_keys = [
+                candidate
+                for candidate in key_order
+                if running_counts.get(candidate, 0) < key_capacities.get(candidate, 1)
+            ]
             if key_name not in available_keys:
                 connection.execute("COMMIT")
                 return None

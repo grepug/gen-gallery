@@ -4,13 +4,18 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
 class ApiKeyConfig:
     name: str
     api_key: str
+    transport: str
+    base_url: Optional[str]
+    model: Optional[str]
+    tool_model: Optional[str]
+    concurrency: int
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,13 @@ def _require_str(name: str) -> str:
     return value
 
 
+def _optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _parse_api_keys(raw: Optional[str]) -> list[ApiKeyConfig]:
     if not raw:
         raise RuntimeError("IMAGE_API_KEYS_JSON is required.")
@@ -76,8 +88,36 @@ def _parse_api_keys(raw: Optional[str]) -> list[ApiKeyConfig]:
             raise RuntimeError(f"IMAGE_API_KEYS_JSON item {index} is missing api_key.")
         if name in seen_names:
             raise RuntimeError(f"Duplicate API key name: {name}")
+        raw_transport = _optional_str(item.get("transport")) or "responses_http"
+        if raw_transport not in {"responses_http", "openai_sdk"}:
+            raise RuntimeError(
+                f"IMAGE_API_KEYS_JSON item {index} has unsupported transport: {raw_transport}"
+            )
+        raw_concurrency = item.get("concurrency", 1)
+        try:
+            concurrency = int(raw_concurrency)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"IMAGE_API_KEYS_JSON item {index} concurrency must be an integer."
+            ) from exc
+        if concurrency < 1:
+            raise RuntimeError(
+                f"IMAGE_API_KEYS_JSON item {index} concurrency must be >= 1."
+            )
         seen_names.add(name)
-        api_keys.append(ApiKeyConfig(name=name, api_key=api_key))
+        api_keys.append(
+            ApiKeyConfig(
+                name=name,
+                api_key=api_key,
+                transport=raw_transport,
+                base_url=_optional_str(item.get("base_url") or item.get("baseURL")),
+                model=_optional_str(item.get("model")),
+                tool_model=_optional_str(
+                    item.get("tool_model") or item.get("toolModel")
+                ),
+                concurrency=concurrency,
+            )
+        )
     return api_keys
 
 
