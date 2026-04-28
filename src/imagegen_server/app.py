@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
     app.state.worker_pool = worker_pool
     app.mount("/ui", StaticFiles(directory=web_dir, html=True), name="ui")
 
-    valid_status_filters = {"all", "active", "succeeded", "failed", "canceled"}
+    valid_status_filters = {"all", "active", "succeeded", "failed", "canceled", "favorites"}
     sort_options = {
         "created_desc": ("created_at", "DESC"),
         "created_asc": ("created_at", "ASC"),
@@ -194,6 +194,26 @@ def create_app() -> FastAPI:
     async def cancel_job(job_id: str, request: Request) -> JobResponse:
         try:
             job = store.cancel_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job_to_response(job, str(request.base_url).rstrip("/"))
+
+    @app.post("/jobs/{job_id}/favorite", response_model=JobResponse)
+    async def favorite_job(job_id: str, request: Request) -> JobResponse:
+        try:
+            job = store.set_favorite(job_id, is_favorite=True)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job_to_response(job, str(request.base_url).rstrip("/"))
+
+    @app.delete("/jobs/{job_id}/favorite", response_model=JobResponse)
+    async def unfavorite_job(job_id: str, request: Request) -> JobResponse:
+        try:
+            job = store.set_favorite(job_id, is_favorite=False)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
         except ValueError as exc:

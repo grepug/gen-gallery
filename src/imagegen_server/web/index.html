@@ -21,6 +21,9 @@
             <button class="filter-chip is-active" data-filter="succeeded" data-label="Succeeded" type="button">
               Succeeded
             </button>
+            <button class="filter-chip" data-filter="favorites" data-label="Favorites" type="button">
+              Favorites
+            </button>
             <button class="filter-chip" data-filter="all" data-label="All" type="button">All</button>
             <button class="filter-chip" data-filter="active" data-label="Active" type="button">Active</button>
             <button class="filter-chip" data-filter="failed" data-label="Failed" type="button">Failed</button>
@@ -106,7 +109,12 @@
                 <p class="detail-label">Selected job</p>
                 <h2 class="detail-title" id="detail-title">Job</h2>
               </div>
-              <span class="status-pill" id="detail-status">Status</span>
+              <div class="detail-head-actions">
+                <span class="status-pill" id="detail-status">Status</span>
+                <button class="ghost-button favorite-button hidden" id="favorite-button" type="button" aria-pressed="false">
+                  ♡
+                </button>
+              </div>
             </div>
 
             <section class="detail-prompt-panel">

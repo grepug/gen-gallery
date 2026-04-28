@@ -40,6 +40,8 @@ class JobResponse(BaseModel):
     finished_at: Optional[str] = None
     next_retry_at: Optional[str] = None
     last_error: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    is_favorite: bool = False
     input_files: list[JobFile] = Field(default_factory=list)
     output_files: list[JobFile] = Field(default_factory=list)
 
@@ -51,6 +53,7 @@ class JobStatusCounts(BaseModel):
     succeeded: int = 0
     failed: int = 0
     canceled: int = 0
+    favorites: int = 0
 
 
 class JobListResponse(BaseModel):

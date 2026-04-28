@@ -13,6 +13,8 @@ from typing import Any, Iterator, Optional
 
 from .schemas import JobResponse
 
+FAVORITE_TAG = "favorite"
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -30,6 +32,30 @@ def sniff_image_suffix(content: bytes) -> str | None:
     if content.startswith(b"BM"):
         return ".bmp"
     return None
+
+
+def normalize_tags(raw_tags: Any) -> list[str]:
+    if not isinstance(raw_tags, list):
+        return []
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in raw_tags:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized
+
+
+def has_favorite_tag(raw_tags: Any) -> bool:
+    return FAVORITE_TAG in normalize_tags(raw_tags)
+
+
+def is_favorite_job(job: dict[str, Any]) -> bool:
+    return job.get("status") == "succeeded" and has_favorite_tag(job.get("tags"))
 
 
 class JobStore:
@@ -74,6 +100,7 @@ class JobStore:
                         next_retry_at TEXT,
                         last_error TEXT,
                         avoid_key_name TEXT,
+                        tags_json TEXT NOT NULL DEFAULT '[]',
                         input_files_json TEXT NOT NULL,
                         output_files_json TEXT NOT NULL
                     )
@@ -102,6 +129,10 @@ class JobStore:
                 if "avoid_key_name" not in columns:
                     connection.execute(
                         "ALTER TABLE jobs ADD COLUMN avoid_key_name TEXT"
+                    )
+                if "tags_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE jobs ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"
                     )
         self.reference_images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,8 +167,9 @@ class JobStore:
                     attempt_count, assigned_key_name, created_at, updated_at,
                     started_at, finished_at, next_retry_at, last_error,
                     avoid_key_name,
+                    tags_json,
                     input_files_json, output_files_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -150,6 +182,7 @@ class JobStore:
                     retry_delay_seconds,
                     now,
                     now,
+                    json.dumps([]),
                     json.dumps(input_files),
                     json.dumps([]),
                 ),
@@ -202,8 +235,9 @@ class JobStore:
                         attempt_count, assigned_key_name, created_at, updated_at,
                         started_at, finished_at, next_retry_at, last_error,
                         avoid_key_name,
+                        tags_json,
                         input_files_json, output_files_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -216,6 +250,7 @@ class JobStore:
                         retry_delay_seconds,
                         now,
                         now,
+                        json.dumps([]),
                         json.dumps(input_files),
                         json.dumps([]),
                     ),
@@ -259,6 +294,13 @@ class JobStore:
         sort_field: str,
         sort_direction: str,
     ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        if status_filter == "favorites":
+            return self._list_favorite_jobs(
+                limit=limit,
+                offset=offset,
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+            )
         where_clause = ""
         params: list[Any] = []
         if status_filter == "active":
@@ -301,12 +343,46 @@ class JobStore:
             "succeeded": 0,
             "failed": 0,
             "canceled": 0,
+            "favorites": 0,
         }
         for row in count_rows:
             status = str(row["status"])
             if status in counts:
                 counts[status] = int(row["count"])
+        counts["favorites"] = self._count_favorites()
         return [self._decode_row(row) for row in rows], total, counts
+
+    def set_favorite(self, job_id: str, *, is_favorite: bool) -> dict[str, Any]:
+        now = utcnow()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, tags_json FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                connection.execute("ROLLBACK")
+                raise KeyError(job_id)
+            if row["status"] != "succeeded":
+                connection.execute("ROLLBACK")
+                raise ValueError("only succeeded jobs can be favorited")
+
+            tags = normalize_tags(json.loads(row["tags_json"] or "[]"))
+            next_tags = [tag for tag in tags if tag != FAVORITE_TAG]
+            if is_favorite:
+                next_tags.append(FAVORITE_TAG)
+            if next_tags != tags:
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET tags_json = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (json.dumps(next_tags), now, job_id),
+                )
+            connection.execute("COMMIT")
+        return self.get_job(job_id)
 
     def claim_next_job(
         self,
@@ -741,9 +817,66 @@ class JobStore:
         payload = dict(row)
         payload["input_files"] = json.loads(payload.pop("input_files_json") or "[]")
         payload["output_files"] = json.loads(payload.pop("output_files_json") or "[]")
+        payload["tags"] = normalize_tags(json.loads(payload.pop("tags_json") or "[]"))
         payload["model"] = payload.pop("model_override")
         payload["tool_model"] = payload.pop("tool_model_override")
         return payload
+
+    def _count_favorites(self) -> int:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT status, tags_json FROM jobs").fetchall()
+        return sum(
+            1
+            for row in rows
+            if row["status"] == "succeeded"
+            and has_favorite_tag(json.loads(row["tags_json"] or "[]"))
+        )
+
+    def _list_favorite_jobs(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        sort_field: str,
+        sort_direction: str,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        order_by = f"{sort_field} {sort_direction}, id {sort_direction}"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM jobs
+                ORDER BY {order_by}
+                """
+            ).fetchall()
+            count_rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM jobs
+                GROUP BY status
+                """
+            ).fetchall()
+        favorite_rows = [
+            row
+            for row in rows
+            if row["status"] == "succeeded"
+            and has_favorite_tag(json.loads(row["tags_json"] or "[]"))
+        ]
+        counts = {
+            "queued": 0,
+            "running": 0,
+            "retry_waiting": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "canceled": 0,
+            "favorites": len(favorite_rows),
+        }
+        for row in count_rows:
+            status = str(row["status"])
+            if status in counts:
+                counts[status] = int(row["count"])
+        paged_rows = favorite_rows[offset : offset + limit]
+        return [self._decode_row(row) for row in paged_rows], len(favorite_rows), counts
 
     def _round_robin_keys(
         self,
@@ -832,6 +965,8 @@ def job_to_response(job: dict[str, Any], base_url: str) -> JobResponse:
         finished_at=job["finished_at"],
         next_retry_at=job["next_retry_at"],
         last_error=job["last_error"],
+        tags=normalize_tags(job.get("tags")),
+        is_favorite=is_favorite_job(job),
         input_files=_convert(job["input_files"]),
         output_files=_convert(job["output_files"]),
     )

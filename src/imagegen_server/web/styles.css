@@ -326,6 +326,13 @@ button {
   color: var(--text-soft);
 }
 
+.card-topline-actions,
+.detail-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .card-prompt {
   margin: 0;
   font-size: 14px;
@@ -362,6 +369,24 @@ button {
   height: 8px;
   border-radius: 999px;
   background: currentColor;
+}
+
+.favorite-button {
+  min-width: 40px;
+  padding: 9px 11px;
+  line-height: 1;
+}
+
+.favorite-button.is-active {
+  color: oklch(61% 0.2 20);
+  background: oklch(96% 0.03 20);
+  border-color: oklch(88% 0.05 20);
+}
+
+.favorite-button--card {
+  min-width: 34px;
+  padding: 6px 9px;
+  background: oklch(99% 0.004 240 / 0.88);
 }
 
 .status-succeeded {

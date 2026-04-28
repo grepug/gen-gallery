@@ -38,6 +38,8 @@ function buildJob(index) {
     finished_at: new Date(Date.UTC(2026, 3, 27, 12, index, 20)).toISOString(),
     next_retry_at: null,
     last_error: null,
+    tags: [],
+    is_favorite: false,
     input_files: [],
     output_files: [
       {
@@ -71,6 +73,7 @@ async function mockJobs(page, totalJobs = 55) {
           succeeded: totalJobs,
           failed: 0,
           canceled: 0,
+          favorites: 0,
         },
       }),
     });
@@ -99,6 +102,7 @@ async function mockJobsWithDelay(page, totalJobs = 55, delayMs = 800) {
           succeeded: totalJobs,
           failed: 0,
           canceled: 0,
+          favorites: 0,
         },
       }),
     });
@@ -250,4 +254,93 @@ test("mobile viewer keeps fullscreen modal controls easy to reach", async ({
   expect(stripBox).not.toBeNull();
   expect(stripBox.width).toBeGreaterThan(250);
   expect(stripBox.height).toBeLessThan(120);
+});
+
+test("favorites tab and heart toggles stay in sync between gallery and detail", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  const jobs = Array.from({ length: 3 }, (_, index) => buildJob(index));
+  const favoriteSet = new Set();
+
+  const countsPayload = () => ({
+    queued: 0,
+    running: 0,
+    retry_waiting: 0,
+    succeeded: jobs.length,
+    failed: 0,
+    canceled: 0,
+    favorites: favoriteSet.size,
+  });
+
+  const serializeJob = (job) => ({
+    ...job,
+    tags: favoriteSet.has(job.id) ? ["favorite"] : [],
+    is_favorite: favoriteSet.has(job.id),
+  });
+
+  await page.route("**/jobs?**", async (route) => {
+    const url = new URL(route.request().url());
+    const filter = url.searchParams.get("status") || "all";
+    const items = jobs
+      .map((job) => serializeJob(job))
+      .filter((job) => (filter === "favorites" ? job.is_favorite : true));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items,
+        total: items.length,
+        limit: items.length,
+        offset: 0,
+        counts: countsPayload(),
+      }),
+    });
+  });
+
+  await page.route("**/jobs/*/favorite", async (route) => {
+    const match = route.request().url().match(/\/jobs\/([^/]+)\/favorite/);
+    const jobId = match?.[1];
+    if (!jobId) {
+      await route.abort();
+      return;
+    }
+    if (route.request().method() === "POST") {
+      favoriteSet.add(jobId);
+    } else if (route.request().method() === "DELETE") {
+      favoriteSet.delete(jobId);
+    }
+    const job = jobs.find((item) => item.id === jobId);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(serializeJob(job)),
+    });
+  });
+
+  await page.goto("/");
+
+  const firstCard = page.locator(".gallery-card").first();
+  await firstCard.locator(".favorite-button").click();
+
+  await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
+  await firstCard.click();
+  await expect(page.locator("#favorite-button")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("button", { name: "Close" }).click();
+
+  await page.getByRole("button", { name: /^Favorites\(1\)$/ }).click();
+  await expect(page.locator(".gallery-card")).toHaveCount(1);
+  await expect(page.locator("#gallery-status")).toHaveText(
+    "Showing 1 of 1 favorite jobs.",
+  );
+
+  await page.locator(".gallery-card").first().click();
+  await page.locator("#favorite-button").click();
+
+  await expect(page.getByRole("button", { name: /^Favorites\(0\)$/ })).toBeVisible();
+  await expect(page.locator(".gallery-card")).toHaveCount(0);
+  await expect(page.locator("#gallery-empty")).toBeVisible();
 });
