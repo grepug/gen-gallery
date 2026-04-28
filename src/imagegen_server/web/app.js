@@ -880,6 +880,18 @@ function renderDetail() {
 
   els.duplicateButton.classList.remove("hidden");
   els.duplicateButton.onclick = async () => {
+    const previousState = {
+      filter: state.filter,
+      selectedId: state.selectedId,
+      modalOpen: state.modalOpen,
+      promptExpanded: state.promptExpanded,
+      immersiveMode: state.immersiveMode,
+      immersiveChromeVisible: state.immersiveChromeVisible,
+      previewZoom: state.previewZoom,
+      previewPanX: state.previewPanX,
+      previewPanY: state.previewPanY,
+      previewDragging: state.previewDragging,
+    };
     try {
       const duplicatedJob = await requestJobMutation(
         `/jobs/${selectedJob.id}/duplicate`,
@@ -895,6 +907,17 @@ function renderDetail() {
       await fetchJobs({ preserveSelection: true });
       setMessage("Job copied and queued.");
     } catch (error) {
+      state.filter = previousState.filter;
+      state.selectedId = previousState.selectedId;
+      state.modalOpen = previousState.modalOpen;
+      state.promptExpanded = previousState.promptExpanded;
+      state.immersiveMode = previousState.immersiveMode;
+      state.immersiveChromeVisible = previousState.immersiveChromeVisible;
+      state.previewZoom = previousState.previewZoom;
+      state.previewPanX = previousState.previewPanX;
+      state.previewPanY = previousState.previewPanY;
+      state.previewDragging = previousState.previewDragging;
+      render();
       setMessage(error.message);
     }
   };

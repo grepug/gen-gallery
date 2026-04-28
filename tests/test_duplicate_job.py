@@ -181,6 +181,40 @@ class DuplicateJobTests(unittest.IsolatedAsyncioTestCase):
         shared_files = list((self.server_home / "shared" / "reference-images").iterdir())
         self.assertEqual(len(shared_files), 1)
 
+    def test_duplicate_job_copies_legacy_local_reference_inputs(self) -> None:
+        image_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01"
+        )
+        source = self.create_job(
+            prompt="legacy local reference",
+            image_action="edit",
+            input_files=[
+                {
+                    "filename": "legacy-reference.png",
+                    "kind": "input",
+                    "size_bytes": len(image_bytes),
+                }
+            ],
+        )
+        source_input_path = (
+            self.jobs_dir / str(source["id"]) / "input" / "legacy-reference.png"
+        )
+        source_input_path.write_bytes(image_bytes)
+
+        duplicated = self.store.duplicate_job(str(source["id"]))
+        duplicated_input_path = self.store.resolve_job_file_path(
+            str(duplicated["id"]),
+            "input",
+            "legacy-reference.png",
+        )
+
+        self.assertEqual(duplicated["image_action"], "edit")
+        self.assertEqual(duplicated_input_path.read_bytes(), image_bytes)
+        self.assertTrue(duplicated_input_path.is_file())
+        self.assertNotEqual(duplicated_input_path, source_input_path)
+
     async def test_duplicate_endpoint_writes_fresh_request_meta_and_event_log(self) -> None:
         image_bytes = (
             b"\x89PNG\r\n\x1a\n"

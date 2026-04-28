@@ -394,6 +394,75 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
   await expect(page.locator("#global-message")).toHaveText("Job copied and queued.");
 });
 
+test("copy and rerun restores the previous selection when the active refresh fails", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const jobs = await mockJobs(page, 6);
+
+  await page.route("**/jobs/*/duplicate", async (route) => {
+    const jobId = route.request().url().split("/jobs/")[1].split("/duplicate")[0];
+    const sourceJob = jobs.find((job) => job.id === jobId);
+    const duplicatedJob = {
+      ...sourceJob,
+      id: "job-copy-error",
+      status: "queued",
+      attempt_count: 0,
+      assigned_key_name: null,
+      created_at: new Date(Date.UTC(2026, 3, 28, 9, 0, 0)).toISOString(),
+      updated_at: new Date(Date.UTC(2026, 3, 28, 9, 0, 0)).toISOString(),
+      started_at: null,
+      finished_at: null,
+      next_retry_at: null,
+      last_error: null,
+      output_files: [],
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(duplicatedJob),
+    });
+  });
+
+  await page.goto("/");
+  await page.locator(".gallery-card").first().click();
+  await expect(page.locator("#detail-prompt-preview")).toContainText("Prompt 6");
+
+  await page.unroute("**/jobs?**");
+  await page.route("**/jobs?**", async (route) => {
+    const url = new URL(route.request().url());
+    const statusFilter = url.searchParams.get("status") || "all";
+    if (statusFilter === "active") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Failed to load jobs" }),
+      });
+      return;
+    }
+    const filtered = jobs.filter((job) => matchesStatusFilter(job, statusFilter));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: filtered,
+        total: filtered.length,
+        limit: filtered.length,
+        offset: 0,
+        counts: countStatuses(jobs),
+      }),
+    });
+  });
+
+  await page.getByRole("button", { name: "Copy & rerun" }).click();
+
+  await expect(page.locator(".filter-chip.is-active")).toHaveAttribute(
+    "data-filter",
+    "succeeded",
+  );
+  await expect(page.locator("#detail-prompt-preview")).toContainText("Prompt 6");
+  await expect(page.locator("#global-message")).toHaveText("Failed to load jobs");
+});
+
 test("refresh caps the first preserve-selection request at 200 and keeps loaded cards", async ({
   page,
 }) => {
