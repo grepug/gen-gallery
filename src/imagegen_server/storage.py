@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from .schemas import JobResponse
 
@@ -389,23 +389,30 @@ class JobStore:
         self,
         key_name: str,
         key_order: list[str],
+        key_capacities: dict[str, int],
+        supports_job: Optional[Callable[[dict[str, Any]], bool]] = None,
     ) -> Optional[dict[str, Any]]:
         now = utcnow()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            busy_keys = {
-                row["assigned_key_name"]
+            running_counts = {
+                str(row["assigned_key_name"]): int(row["count"])
                 for row in connection.execute(
                     """
-                    SELECT DISTINCT assigned_key_name
+                    SELECT assigned_key_name, COUNT(*) AS count
                     FROM jobs
                     WHERE status = 'running'
                       AND assigned_key_name IS NOT NULL
+                    GROUP BY assigned_key_name
                     """
                 ).fetchall()
                 if row["assigned_key_name"]
             }
-            available_keys = [candidate for candidate in key_order if candidate not in busy_keys]
+            available_keys = [
+                candidate
+                for candidate in key_order
+                if running_counts.get(candidate, 0) < key_capacities.get(candidate, 1)
+            ]
             if key_name not in available_keys:
                 connection.execute("COMMIT")
                 return None
@@ -437,6 +444,7 @@ class JobStore:
                 key_name=key_name,
                 now=now,
                 allow_avoided_fallback=allow_avoided_fallback,
+                supports_job=supports_job,
             )
             if row is None:
                 connection.execute("COMMIT")
@@ -579,6 +587,51 @@ class JobStore:
                 {"reason": reason},
             )
         return recovered_job_ids
+
+    def fail_pending_jobs(
+        self,
+        predicate: Callable[[dict[str, Any]], bool],
+        reason: str,
+    ) -> list[str]:
+        now = utcnow()
+        failed_job_ids: list[str] = []
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM jobs
+                WHERE status IN ('queued', 'retry_waiting', 'running')
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            for row in rows:
+                job = self._decode_row(row)
+                if not predicate(job):
+                    continue
+                failed_job_ids.append(str(job["id"]))
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'failed',
+                        assigned_key_name = NULL,
+                        updated_at = ?,
+                        finished_at = ?,
+                        next_retry_at = NULL,
+                        avoid_key_name = NULL,
+                        last_error = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, reason, job["id"]),
+                )
+            connection.execute("COMMIT")
+        for job_id in failed_job_ids:
+            self.append_event(
+                job_id,
+                "job_failed_as_unsupported_shape",
+                {"reason": reason},
+            )
+        return failed_job_ids
 
     def update_input_files(self, job_id: str, input_files: list[dict[str, Any]]) -> None:
         now = utcnow()
@@ -943,8 +996,9 @@ class JobStore:
         key_name: str,
         now: str,
         allow_avoided_fallback: bool,
+        supports_job: Optional[Callable[[dict[str, Any]], bool]],
     ) -> Optional[sqlite3.Row]:
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT *
             FROM jobs
@@ -954,15 +1008,15 @@ class JobStore:
                   )
               AND (avoid_key_name IS NULL OR avoid_key_name != ?)
             ORDER BY created_at ASC
-            LIMIT 1
             """,
             (now, key_name),
-        ).fetchone()
+        ).fetchall()
+        row = self._first_supported_row(rows, supports_job)
         if row is not None:
             return row
         if not allow_avoided_fallback:
             return None
-        return connection.execute(
+        fallback_rows = connection.execute(
             """
             SELECT *
             FROM jobs
@@ -971,10 +1025,22 @@ class JobStore:
               AND next_retry_at <= ?
               AND avoid_key_name = ?
             ORDER BY created_at ASC
-            LIMIT 1
             """,
             (now, key_name),
-        ).fetchone()
+        ).fetchall()
+        return self._first_supported_row(fallback_rows, supports_job)
+
+    def _first_supported_row(
+        self,
+        rows: list[sqlite3.Row],
+        supports_job: Optional[Callable[[dict[str, Any]], bool]],
+    ) -> Optional[sqlite3.Row]:
+        if supports_job is None:
+            return rows[0] if rows else None
+        for row in rows:
+            if supports_job(self._decode_row(row)):
+                return row
+        return None
 
 
 def job_to_response(job: dict[str, Any], base_url: str) -> JobResponse:

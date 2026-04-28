@@ -4,29 +4,24 @@ import base64
 import json
 import mimetypes
 import socket
+import tempfile
 import urllib.error
 import urllib.request
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import Any, Union
+
+from openai import OpenAI
+
+from .errors import ImageGenerationError
+from .sdk_edit_prep import prepare_sdk_edit_assets
 
 
 @dataclass
 class OpenAIImageResult:
     image_bytes: bytes
     seen_events: list[str]
-
-
-class ImageGenerationError(RuntimeError):
-    def __init__(
-        self,
-        message: str,
-        retryable: bool,
-        immediate_retry_on_other_key: bool = False,
-    ) -> None:
-        super().__init__(message)
-        self.retryable = retryable
-        self.immediate_retry_on_other_key = immediate_retry_on_other_key
 
 
 def summarize_stream_error(event: dict) -> str:
@@ -108,7 +103,129 @@ def build_input(prompt: str, reference_images: list[Path]) -> Union[str, list[di
     return [{"role": "user", "content": content}]
 
 
-def generate_image(
+def build_responses_payload(
+    *,
+    model: str,
+    tool_model: str,
+    image_action: str,
+    prompt: str,
+    reference_images: list[Path],
+    stream: bool,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "stream": stream,
+        "input": build_input(prompt, reference_images),
+        "tools": [
+            {
+                "type": "image_generation",
+                "model": tool_model,
+                "action": image_action,
+            }
+        ],
+    }
+
+
+def _extract_image_result_from_output_items(
+    output_items: list[Any],
+) -> tuple[str | None, list[str], str | None]:
+    result_b64 = None
+    seen_events: list[str] = []
+    stream_error = None
+
+    for item in output_items:
+        item_type = getattr(item, "type", None)
+        if item_type:
+            seen_events.append(str(item_type))
+        if item_type == "image_generation_call":
+            item_result = getattr(item, "result", None)
+            if item_result:
+                result_b64 = item_result
+        if item_type == "message":
+            for content_item in getattr(item, "content", []) or []:
+                content_type = getattr(content_item, "type", None)
+                if content_type:
+                    seen_events.append(str(content_type))
+        item_error = getattr(item, "error", None)
+        if item_error and not stream_error:
+            stream_error = str(item_error)
+
+    return result_b64, seen_events, stream_error
+
+
+def _extract_image_bytes_from_sdk_response(response: Any) -> bytes:
+    if isinstance(response, dict):
+        data_items = list(response.get("data", []) or [])
+    else:
+        data_items = list(getattr(response, "data", []) or [])
+    if not data_items:
+        raise ImageGenerationError(
+            "No image payload found in SDK response.",
+            retryable=True,
+        )
+
+    first_item = data_items[0]
+    if isinstance(first_item, dict):
+        b64_json = first_item.get("b64_json")
+        image_url = first_item.get("url")
+    else:
+        b64_json = getattr(first_item, "b64_json", None)
+        image_url = getattr(first_item, "url", None)
+    if b64_json:
+        return base64.b64decode(b64_json)
+
+    if image_url:
+        with urllib.request.urlopen(image_url) as response_handle:
+            return response_handle.read()
+
+    raise ImageGenerationError(
+        "No image payload found in SDK response.",
+        retryable=True,
+    )
+
+
+def _map_sdk_exception(exc: Exception) -> ImageGenerationError:
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        immediate_retry_on_other_key = status_code in {401, 403}
+        retryable = status_code >= 500 or status_code in {401, 403, 429}
+        return ImageGenerationError(
+            f"Responses SDK request failed with HTTP {status_code}: {exc}",
+            retryable=retryable,
+            immediate_retry_on_other_key=immediate_retry_on_other_key,
+        )
+
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return ImageGenerationError(
+            f"Network error during image generation: {exc}",
+            retryable=True,
+        )
+
+    exc_name = exc.__class__.__name__
+    if exc_name in {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ReadError",
+        "ReadTimeout",
+        "TimeoutException",
+        "WriteError",
+    }:
+        return ImageGenerationError(
+            f"Network error during image generation: {exc}",
+            retryable=True,
+        )
+
+    return ImageGenerationError(
+        f"SDK error during image generation: {exc}",
+        retryable=False,
+    )
+
+
+def generate_image_via_responses_http(
     *,
     base_url: str,
     api_key: str,
@@ -119,18 +236,14 @@ def generate_image(
     reference_images: list[Path],
     timeout_seconds: int,
 ) -> OpenAIImageResult:
-    payload = {
-        "model": model,
-        "stream": True,
-        "input": build_input(prompt, reference_images),
-        "tools": [
-            {
-                "type": "image_generation",
-                "model": tool_model,
-                "action": image_action,
-            }
-        ],
-    }
+    payload = build_responses_payload(
+        model=model,
+        tool_model=tool_model,
+        image_action=image_action,
+        prompt=prompt,
+        reference_images=reference_images,
+        stream=True,
+    )
 
     request = urllib.request.Request(
         base_url + "/responses",
@@ -204,4 +317,121 @@ def generate_image(
     return OpenAIImageResult(
         image_bytes=base64.b64decode(result_b64),
         seen_events=seen_events,
+    )
+
+
+def generate_image_via_openai_sdk(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    tool_model: str,
+    image_action: str,
+    prompt: str,
+    reference_images: list[Path],
+    timeout_seconds: int,
+) -> OpenAIImageResult:
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+        )
+        sdk_model = tool_model or model
+        if reference_images and image_action != "edit":
+            raise ImageGenerationError(
+                "SDK-backed reference-image requests currently require image_action=edit.",
+                retryable=False,
+            )
+        uses_edit_path = image_action == "edit"
+        if uses_edit_path:
+            if not reference_images:
+                raise ImageGenerationError(
+                    "SDK image edit requires at least one reference image.",
+                    retryable=False,
+                )
+            with ExitStack() as exit_stack:
+                temp_dir = Path(exit_stack.enter_context(tempfile.TemporaryDirectory()))
+                prepared_image_path, prepared_mask_path = prepare_sdk_edit_assets(
+                    reference_images,
+                    temp_dir,
+                )
+                image_handle = exit_stack.enter_context(prepared_image_path.open("rb"))
+                mask_handle = exit_stack.enter_context(prepared_mask_path.open("rb"))
+                request = client._client.build_request(
+                    "POST",
+                    str(client.base_url) + "images/edits",
+                    data={
+                        "model": sdk_model,
+                        "prompt": prompt,
+                        "output_format": "png",
+                        "response_format": "b64_json",
+                        "size": "1024x1024",
+                    },
+                    files={
+                        "image": ("edit-image.png", image_handle, "image/png"),
+                        "mask": ("edit-mask.png", mask_handle, "image/png"),
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                response = client._client.send(request)
+                response.raise_for_status()
+                response = response.json()
+            seen_events = ["images.edit"]
+        else:
+            response = client.images.generate(
+                model=sdk_model,
+                prompt=prompt,
+                size="1024x1024",
+                response_format="b64_json",
+            )
+            seen_events = ["images.generate"]
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, ImageGenerationError):
+            raise
+        raise _map_sdk_exception(exc) from exc
+
+    return OpenAIImageResult(
+        image_bytes=_extract_image_bytes_from_sdk_response(response),
+        seen_events=seen_events,
+    )
+
+
+def generate_image(
+    *,
+    transport: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    tool_model: str,
+    image_action: str,
+    prompt: str,
+    reference_images: list[Path],
+    timeout_seconds: int,
+) -> OpenAIImageResult:
+    if transport == "responses_http":
+        return generate_image_via_responses_http(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            tool_model=tool_model,
+            image_action=image_action,
+            prompt=prompt,
+            reference_images=reference_images,
+            timeout_seconds=timeout_seconds,
+        )
+    if transport == "openai_sdk":
+        return generate_image_via_openai_sdk(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            tool_model=tool_model,
+            image_action=image_action,
+            prompt=prompt,
+            reference_images=reference_images,
+            timeout_seconds=timeout_seconds,
+        )
+    raise ImageGenerationError(
+        f"Unsupported image transport: {transport}",
+        retryable=False,
     )
