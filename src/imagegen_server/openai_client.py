@@ -160,6 +160,30 @@ def _extract_image_result_from_output_items(
     return result_b64, seen_events, stream_error
 
 
+def _extract_image_bytes_from_sdk_response(response: Any) -> bytes:
+    data_items = list(getattr(response, "data", []) or [])
+    if not data_items:
+        raise ImageGenerationError(
+            "No image payload found in SDK response.",
+            retryable=True,
+        )
+
+    first_item = data_items[0]
+    b64_json = getattr(first_item, "b64_json", None)
+    if b64_json:
+        return base64.b64decode(b64_json)
+
+    image_url = getattr(first_item, "url", None)
+    if image_url:
+        with urllib.request.urlopen(image_url) as response_handle:
+            return response_handle.read()
+
+    raise ImageGenerationError(
+        "No image payload found in SDK response.",
+        retryable=True,
+    )
+
+
 def _map_sdk_exception(exc: Exception) -> ImageGenerationError:
     status_code = getattr(exc, "status_code", None)
     if isinstance(status_code, int):
@@ -296,40 +320,43 @@ def generate_image_via_openai_sdk(
     reference_images: list[Path],
     timeout_seconds: int,
 ) -> OpenAIImageResult:
-    payload = build_responses_payload(
-        model=model,
-        tool_model=tool_model,
-        image_action=image_action,
-        prompt=prompt,
-        reference_images=reference_images,
-        stream=False,
-    )
-
     try:
         client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout_seconds,
         )
-        response = client.responses.create(**payload)
+        sdk_model = tool_model or model
+        uses_edit_path = bool(reference_images) or image_action == "edit"
+        if uses_edit_path:
+            if not reference_images:
+                raise ImageGenerationError(
+                    "SDK image edit requires at least one reference image.",
+                    retryable=False,
+                )
+            response = client.images.edit(
+                model=sdk_model,
+                prompt=prompt,
+                images=[
+                    {"image_url": make_data_url(image_path)}
+                    for image_path in reference_images
+                ],
+            )
+            seen_events = ["images.edit"]
+        else:
+            response = client.images.generate(
+                model=sdk_model,
+                prompt=prompt,
+                size="1024x1024",
+            )
+            seen_events = ["images.generate"]
     except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, ImageGenerationError):
+            raise
         raise _map_sdk_exception(exc) from exc
 
-    output_items = list(getattr(response, "output", []) or [])
-    result_b64, seen_events, stream_error = _extract_image_result_from_output_items(
-        output_items
-    )
-
-    if not result_b64:
-        message = "No image payload found in SDK response."
-        if stream_error:
-            message += f" Upstream error: {stream_error}."
-        if seen_events:
-            message += " Seen items: " + ", ".join(seen_events[:30])
-        raise ImageGenerationError(message, retryable=True)
-
     return OpenAIImageResult(
-        image_bytes=base64.b64decode(result_b64),
+        image_bytes=_extract_image_bytes_from_sdk_response(response),
         seen_events=seen_events,
     )
 

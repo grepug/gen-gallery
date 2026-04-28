@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
 from imagegen_server.config import load_settings
-from imagegen_server.openai_client import OpenAIImageResult, generate_image
+from imagegen_server.openai_client import (
+    OpenAIImageResult,
+    generate_image,
+    generate_image_via_openai_sdk,
+)
 from imagegen_server.storage import JobStore
 
 
@@ -144,6 +149,32 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result, expected)
         sdk_mock.assert_called_once()
         raw_mock.assert_not_called()
+
+    def test_sdk_transport_uses_images_generate_for_generate_jobs(self) -> None:
+        fake_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json="cG5n")]
+        )
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=lambda **kwargs: fake_response,
+                edit=lambda **kwargs: fake_response,
+            )
+        )
+
+        with patch("imagegen_server.openai_client.OpenAI", return_value=fake_client):
+            result = generate_image_via_openai_sdk(
+                base_url="https://lingsuan.nmyh.cc/v1",
+                api_key="sk-test",
+                model="gpt-5.5",
+                tool_model="gpt-image-2",
+                image_action="generate",
+                prompt="hello",
+                reference_images=[],
+                timeout_seconds=60,
+            )
+
+        self.assertEqual(result.image_bytes, b"png")
+        self.assertEqual(result.seen_events, ["images.generate"])
 
 
 if __name__ == "__main__":
