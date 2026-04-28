@@ -19,6 +19,7 @@ const SORT_OPTIONS = {
 };
 const DESKTOP_COLUMN_OPTIONS = new Set(["2", "3", "4"]);
 const JOB_LIST_CACHE_KEY_PREFIX = "imagegen-gallery:jobs:v1";
+const JOB_API_MAX_PAGE_SIZE = 200;
 
 const state = {
   jobs: [],
@@ -306,6 +307,14 @@ function ensureSelection() {
   if (!jobs.length) {
     state.selectedId = null;
     state.modalOpen = false;
+    return;
+  }
+  if (
+    state.isLoading &&
+    state.loadingMode === "refresh" &&
+    state.selectedId &&
+    !jobs.some((job) => job.id === state.selectedId)
+  ) {
     return;
   }
   if (!jobs.some((job) => job.id === state.selectedId)) {
@@ -774,7 +783,13 @@ function schedulePreviewTransform() {
 function renderDetail() {
   const jobs = filteredJobs();
   const selectedJob = jobs.find((job) => job.id === state.selectedId);
-  const isOpen = Boolean(selectedJob && state.modalOpen);
+  const pendingSelectedJob =
+    state.modalOpen &&
+    state.isLoading &&
+    state.loadingMode === "refresh" &&
+    state.selectedId &&
+    !selectedJob;
+  const isOpen = Boolean(state.modalOpen && (selectedJob || pendingSelectedJob));
 
   document.body.classList.toggle("modal-open", isOpen);
   document.body.classList.toggle(
@@ -796,6 +811,27 @@ function renderDetail() {
     : "Fullscreen";
   els.detailEmpty.classList.toggle("hidden", isOpen);
   els.detailContent.classList.toggle("hidden", !isOpen);
+  if (pendingSelectedJob) {
+    els.detailStrip.innerHTML = "";
+    els.detailPreview.removeAttribute("src");
+    els.detailPreview.classList.add("hidden");
+    els.detailPlaceholder.textContent = "Loading selected job...";
+    els.detailPlaceholder.classList.remove("hidden");
+    els.detailTitle.textContent = "Loading job...";
+    els.detailStatus.className = "status-pill hidden";
+    els.detailStatus.textContent = "";
+    els.detailPromptPreview.textContent = "";
+    els.detailPromptFull.classList.add("hidden");
+    els.detailPromptScroll.textContent = "";
+    els.detailPromptToggle.classList.add("hidden");
+    els.detailReference.classList.add("hidden");
+    els.metaGrid.innerHTML = "";
+    els.duplicateButton.classList.add("hidden");
+    els.retryButton.classList.add("hidden");
+    els.cancelButton.classList.add("hidden");
+    els.deleteButton.classList.add("hidden");
+    return;
+  }
   if (!selectedJob || !state.modalOpen) return;
 
   renderDetailStrip(selectedJob, jobs);
@@ -842,6 +878,7 @@ function renderDetail() {
   const canCancel = ACTIVE_STATUSES.has(selectedJob.status);
   const canDelete = !canCancel;
 
+  els.duplicateButton.classList.remove("hidden");
   els.duplicateButton.onclick = async () => {
     try {
       const duplicatedJob = await requestJobMutation(
@@ -960,10 +997,11 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
   if (state.isLoading) return;
   const requestSerial = ++state.requestSerial;
   const preferredSelectedId = preserveSelection ? state.selectedId : null;
-  const requestLimit =
+  const desiredLoadedCount =
     reset && preserveSelection
       ? Math.max(state.pageSize, state.jobs.length || state.pageSize)
       : state.pageSize;
+  const requestLimit = Math.min(JOB_API_MAX_PAGE_SIZE, desiredLoadedCount);
   const offset = reset ? 0 : state.jobs.length;
 
   if (reset && !preserveSelection) {
@@ -992,14 +1030,18 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
     if (requestSerial !== state.requestSerial) return;
 
     let nextItems = Array.isArray(payload.items) ? payload.items : [];
-    if (
-      reset &&
-      preserveSelection &&
-      preferredSelectedId &&
-      !nextItems.some((job) => job.id === preferredSelectedId)
-    ) {
+    if (reset && preserveSelection) {
       let nextOffset = nextItems.length;
       while (nextOffset < Number(payload.total || 0)) {
+        const selectionMissing =
+          preferredSelectedId &&
+          !nextItems.some((job) => job.id === preferredSelectedId);
+        if (
+          nextItems.length >= Math.min(desiredLoadedCount, Number(payload.total || 0)) &&
+          !selectionMissing
+        ) {
+          break;
+        }
         const nextPage = await fetchJobsPage({
           limit: state.pageSize,
           offset: nextOffset,
@@ -1010,9 +1052,6 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
         const pageItems = Array.isArray(nextPage.items) ? nextPage.items : [];
         if (!pageItems.length) break;
         nextItems = [...nextItems, ...pageItems];
-        if (pageItems.some((job) => job.id === preferredSelectedId)) {
-          break;
-        }
         nextOffset += pageItems.length;
       }
     }

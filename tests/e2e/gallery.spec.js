@@ -94,7 +94,8 @@ function countStatuses(jobs) {
   );
 }
 
-async function mockJobs(page, totalJobsOrItems = 55) {
+async function mockJobs(page, totalJobsOrItems = 55, options = {}) {
+  const { delayMs = 0, onRequest = null } = options;
   const jobs = Array.isArray(totalJobsOrItems)
     ? totalJobsOrItems
     : Array.from({ length: totalJobsOrItems }, (_, index) => buildJob(index));
@@ -104,10 +105,16 @@ async function mockJobs(page, totalJobsOrItems = 55) {
     const offset = Number(url.searchParams.get("offset") || 0);
     const statusFilter = url.searchParams.get("status") || "all";
     const sort = url.searchParams.get("sort") || "created_desc";
+    if (typeof onRequest === "function") {
+      onRequest({ limit, offset, statusFilter, sort });
+    }
     const filtered = jobs
       .filter((job) => matchesStatusFilter(job, statusFilter))
       .sort((left, right) => compareJobs(left, right, sort));
     const items = filtered.slice(offset, offset + limit);
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -121,6 +128,19 @@ async function mockJobs(page, totalJobsOrItems = 55) {
   });
 
   return jobs;
+}
+
+async function scrollUntilCardCount(page, expectedCount) {
+  for (;;) {
+    const currentCount = await page.locator(".gallery-card").count();
+    if (currentCount >= expectedCount) return;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForFunction(
+      (previousCount) =>
+        document.querySelectorAll(".gallery-card").length > previousCount,
+      currentCount,
+    );
+  }
 }
 
 async function mockJobsWithDelay(page, totalJobs = 55, delayMs = 800) {
@@ -315,7 +335,9 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
     id: `succeeded-job-${index + 1}`,
     prompt: `Prompt ${index + 1}`,
   }));
-  const jobs = await mockJobs(page, [...activeJobs, ...succeededJobs]);
+  const jobs = await mockJobs(page, [...activeJobs, ...succeededJobs], {
+    delayMs: 700,
+  });
   let duplicateCount = 0;
 
   await page.route("**/jobs/*/duplicate", async (route) => {
@@ -350,6 +372,12 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
   await page.locator(".gallery-card").first().click();
   await page.getByRole("button", { name: "Copy & rerun" }).click();
 
+  await expect(page.locator("#detail-title")).toHaveText("Loading job...");
+  await expect(page.locator("#detail-placeholder")).toContainText(
+    "Loading selected job...",
+  );
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeHidden();
+
   await expect(page.locator(".filter-chip.is-active")).toHaveAttribute(
     "data-filter",
     "active",
@@ -364,4 +392,30 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
     "This job has not produced a generated image yet.",
   );
   await expect(page.locator("#global-message")).toHaveText("Job copied and queued.");
+});
+
+test("refresh caps the first preserve-selection request at 200 and keeps loaded cards", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const requestLog = [];
+  await mockJobs(page, 240, {
+    onRequest: (request) => {
+      requestLog.push(request);
+    },
+  });
+
+  await page.goto("/");
+  await scrollUntilCardCount(page, 240);
+  await expect(page.locator(".gallery-card")).toHaveCount(240);
+
+  requestLog.length = 0;
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.locator(".gallery-card")).toHaveCount(240);
+
+  const refreshRequests = requestLog.filter((request) => request.offset === 0);
+  expect(refreshRequests.length).toBeGreaterThan(0);
+  expect(refreshRequests[0].limit).toBe(200);
+  expect(Math.max(...requestLog.map((request) => request.limit))).toBe(200);
 });
