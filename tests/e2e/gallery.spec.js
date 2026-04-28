@@ -559,11 +559,11 @@ test("favoriting wins over an in-flight stale refresh response", async ({ page }
   await page.goto("/");
   const firstCardHeart = page.locator(".gallery-card").first().locator(".favorite-button");
 
-  await page.getByRole("button", { name: "Refresh" }).click();
   const scrollBefore = await page.evaluate(() => window.scrollY);
   await page.evaluate(() => {
     window.__staleRefreshFavoriteCardRef = document.querySelector(".gallery-card");
   });
+  await page.getByRole("button", { name: "Refresh" }).click();
   await firstCardHeart.click();
 
   await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();

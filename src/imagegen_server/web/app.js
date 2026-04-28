@@ -681,15 +681,53 @@ function createGalleryCard(job) {
   return card;
 }
 
-function renderGallery({ appendOnly = false } = {}) {
+function syncGalleryCard(card, job) {
+  const nextCard = createGalleryCard(job);
+  card.tabIndex = nextCard.tabIndex;
+  card.dataset.jobId = nextCard.dataset.jobId;
+  card.className = nextCard.className;
+  card.replaceChildren(...nextCard.childNodes);
+}
+
+function reconcileGalleryCards(jobs) {
+  const existingCards = new Map(
+    [...els.galleryGrid.querySelectorAll(".gallery-card")].map((card) => [
+      card.dataset.jobId,
+      card,
+    ]),
+  );
+  const desiredIds = new Set(jobs.map((job) => job.id));
+
+  existingCards.forEach((card, jobId) => {
+    if (!desiredIds.has(jobId)) {
+      card.remove();
+    }
+  });
+
+  let nextSibling = els.galleryGrid.firstElementChild;
+  jobs.forEach((job) => {
+    let card = existingCards.get(job.id);
+    if (card) {
+      syncGalleryCard(card, job);
+    } else {
+      card = createGalleryCard(job);
+    }
+    if (card !== nextSibling) {
+      els.galleryGrid.insertBefore(card, nextSibling);
+    }
+    nextSibling = card.nextElementSibling;
+  });
+}
+
+function renderGallery({ appendOnly = false, reconcileOnly = false } = {}) {
   const jobs = filteredJobs();
   const showSkeletons = state.isLoading && jobs.length === 0;
-  if (!appendOnly) {
+  if (!appendOnly && !reconcileOnly) {
     els.galleryGrid.innerHTML = "";
   }
   els.galleryEmpty.classList.toggle(
     "hidden",
-    jobs.length > 0 || showSkeletons || appendOnly,
+    jobs.length > 0 || showSkeletons || appendOnly || reconcileOnly,
   );
 
   if (showSkeletons) {
@@ -710,6 +748,12 @@ function renderGallery({ appendOnly = false } = {}) {
       `;
       els.galleryGrid.appendChild(card);
     }
+    return;
+  }
+
+  if (reconcileOnly) {
+    reconcileGalleryCards(jobs);
+    scheduleGalleryMasonry();
     return;
   }
 
@@ -1220,6 +1264,8 @@ function render({ galleryMode = "full" } = {}) {
   renderFilterBar();
   if (galleryMode === "full") {
     renderGallery();
+  } else if (galleryMode === "reconcile") {
+    renderGallery({ reconcileOnly: true });
   } else if (galleryMode === "append") {
     renderGallery({ appendOnly: true });
   }
@@ -1254,7 +1300,7 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       : reset
         ? "initial"
         : "append";
-  render({ galleryMode: reset ? "full" : "none" });
+  render({ galleryMode: reset ? (preserveSelection ? "none" : "full") : "none" });
   try {
     const payload = await fetchJobsPage({
       limit: requestLimit,
@@ -1323,7 +1369,15 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
     const staleData = requestDataEpoch !== state.dataEpoch;
     state.isLoading = false;
     state.loadingMode = null;
-    render({ galleryMode: staleData ? "none" : reset ? "full" : "append" });
+    render({
+      galleryMode: staleData
+        ? "none"
+        : reset
+          ? preserveSelection
+            ? "reconcile"
+            : "full"
+          : "append",
+    });
   }
 }
 
