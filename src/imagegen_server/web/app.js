@@ -1320,9 +1320,10 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
     ensureSelection();
   } finally {
     if (requestSerial !== state.requestSerial) return;
+    const staleData = requestDataEpoch !== state.dataEpoch;
     state.isLoading = false;
     state.loadingMode = null;
-    render({ galleryMode: reset ? "full" : "append" });
+    render({ galleryMode: staleData ? "none" : reset ? "full" : "append" });
   }
 }
 

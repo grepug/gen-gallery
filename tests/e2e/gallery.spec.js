@@ -560,11 +560,28 @@ test("favoriting wins over an in-flight stale refresh response", async ({ page }
   const firstCardHeart = page.locator(".gallery-card").first().locator(".favorite-button");
 
   await page.getByRole("button", { name: "Refresh" }).click();
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+  await page.evaluate(() => {
+    window.__staleRefreshFavoriteCardRef = document.querySelector(".gallery-card");
+  });
   await firstCardHeart.click();
 
   await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
   await expect(firstCardHeart).toHaveAttribute("aria-pressed", "true");
   expect(jobsRequestCount).toBe(2);
+
+  const scrollAfter = await page.evaluate(() => window.scrollY);
+  expect(Math.abs(scrollAfter - scrollBefore)).toBeLessThan(24);
+
+  const cardPreserved = await page.evaluate(() => {
+    const currentCard = document.querySelector(".gallery-card");
+    return (
+      Boolean(window.__staleRefreshFavoriteCardRef) &&
+      window.__staleRefreshFavoriteCardRef.isConnected &&
+      currentCard === window.__staleRefreshFavoriteCardRef
+    );
+  });
+  expect(cardPreserved).toBe(true);
 });
 
 test("copy and rerun creates a fresh queued job and switches to active jobs", async ({
