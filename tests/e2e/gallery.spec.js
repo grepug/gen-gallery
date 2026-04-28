@@ -303,7 +303,19 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
 }) => {
   await clearLocalGalleryCache(page);
   await page.setViewportSize({ width: 1280, height: 900 });
-  const jobs = await mockJobs(page, 6);
+  const activeJobs = Array.from({ length: 45 }, (_, index) => ({
+    ...buildJob(index),
+    id: `active-job-${index + 1}`,
+    status: "queued",
+    prompt: `Active prompt ${index + 1}`,
+    output_files: [],
+  }));
+  const succeededJobs = Array.from({ length: 6 }, (_, index) => ({
+    ...buildJob(index + 100),
+    id: `succeeded-job-${index + 1}`,
+    prompt: `Prompt ${index + 1}`,
+  }));
+  const jobs = await mockJobs(page, [...activeJobs, ...succeededJobs]);
   let duplicateCount = 0;
 
   await page.route("**/jobs/*/duplicate", async (route) => {
@@ -334,6 +346,7 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
   });
 
   await page.goto("/");
+  await page.locator("#sort-select").selectOption("created_asc");
   await page.locator(".gallery-card").first().click();
   await page.getByRole("button", { name: "Copy & rerun" }).click();
 
@@ -341,12 +354,12 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
     "data-filter",
     "active",
   );
-  await expect(page.locator(".gallery-card")).toHaveCount(1);
+  await expect(page.locator(".gallery-card")).toHaveCount(46);
   await expect(page.locator("#gallery-status")).toHaveText(
-    "Showing 1 of 1 active jobs.",
+    "Showing 46 of 46 active jobs.",
   );
   await expect(page.locator("#detail-status")).toHaveText("queued");
-  await expect(page.locator("#detail-prompt-preview")).toContainText("Prompt 6");
+  await expect(page.locator("#detail-prompt-preview")).toContainText("Prompt 1");
   await expect(page.locator("#detail-placeholder")).toContainText(
     "This job has not produced a generated image yet.",
   );

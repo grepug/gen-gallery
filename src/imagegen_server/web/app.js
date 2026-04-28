@@ -168,6 +168,20 @@ function filteredJobs() {
   return state.jobs;
 }
 
+function compareJobs(left, right, sort = state.sort) {
+  const option = SORT_OPTIONS[sort] || SORT_OPTIONS.created_desc;
+  const leftValue = Date.parse(left[option.field] || 0);
+  const rightValue = Date.parse(right[option.field] || 0);
+  if (leftValue === rightValue) {
+    return option.direction === "asc"
+      ? String(left.id).localeCompare(String(right.id))
+      : String(right.id).localeCompare(String(left.id));
+  }
+  return option.direction === "asc"
+    ? leftValue - rightValue
+    : rightValue - leftValue;
+}
+
 function cacheKeyForCurrentQuery() {
   return `${JOB_LIST_CACHE_KEY_PREFIX}:${state.filter}:${state.sort}:${state.pageSize}`;
 }
@@ -915,6 +929,21 @@ async function requestJobMutation(path, options) {
   return response.json().catch(() => null);
 }
 
+async function fetchJobsPage({ limit, offset, status, sort }) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    status,
+    sort,
+  });
+  const response = await fetch(`/jobs?${params.toString()}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Failed to load jobs");
+  }
+  return response.json();
+}
+
 function render({ galleryMode = "full" } = {}) {
   ensureSelection();
   renderFilterBar();
@@ -930,6 +959,7 @@ function render({ galleryMode = "full" } = {}) {
 async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
   if (state.isLoading) return;
   const requestSerial = ++state.requestSerial;
+  const preferredSelectedId = preserveSelection ? state.selectedId : null;
   const requestLimit =
     reset && preserveSelection
       ? Math.max(state.pageSize, state.jobs.length || state.pageSize)
@@ -952,21 +982,44 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
         ? "initial"
         : "append";
   render({ galleryMode: reset ? "full" : "none" });
-  const params = new URLSearchParams({
-    limit: String(requestLimit),
-    offset: String(offset),
-    status: state.filter,
-    sort: state.sort,
-  });
   try {
-    const response = await fetch(`/jobs?${params.toString()}`);
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "Failed to load jobs");
-    }
-    const payload = await response.json();
+    const payload = await fetchJobsPage({
+      limit: requestLimit,
+      offset,
+      status: state.filter,
+      sort: state.sort,
+    });
     if (requestSerial !== state.requestSerial) return;
-    const nextItems = Array.isArray(payload.items) ? payload.items : [];
+
+    let nextItems = Array.isArray(payload.items) ? payload.items : [];
+    if (
+      reset &&
+      preserveSelection &&
+      preferredSelectedId &&
+      !nextItems.some((job) => job.id === preferredSelectedId)
+    ) {
+      let nextOffset = nextItems.length;
+      while (nextOffset < Number(payload.total || 0)) {
+        const nextPage = await fetchJobsPage({
+          limit: state.pageSize,
+          offset: nextOffset,
+          status: state.filter,
+          sort: state.sort,
+        });
+        if (requestSerial !== state.requestSerial) return;
+        const pageItems = Array.isArray(nextPage.items) ? nextPage.items : [];
+        if (!pageItems.length) break;
+        nextItems = [...nextItems, ...pageItems];
+        if (pageItems.some((job) => job.id === preferredSelectedId)) {
+          break;
+        }
+        nextOffset += pageItems.length;
+      }
+    }
+
+    nextItems = [...nextItems].sort((left, right) =>
+      compareJobs(left, right, state.sort),
+    );
     state.jobs = reset ? nextItems : [...state.jobs, ...nextItems];
     state.filteredTotal = payload.total;
     state.counts = payload.counts || state.counts;
@@ -975,6 +1028,9 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       0,
     );
     state.hasMore = state.jobs.length < state.filteredTotal;
+    if (preferredSelectedId) {
+      state.selectedId = preferredSelectedId;
+    }
     if (reset) {
       writeCachedJobs({
         items: nextItems,
