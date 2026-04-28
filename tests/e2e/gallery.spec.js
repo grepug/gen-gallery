@@ -444,12 +444,14 @@ test("copy and rerun creates a fresh queued job and switches to active jobs", as
   await page.goto("/");
   await page.locator("#sort-select").selectOption("created_asc");
   await page.locator(".gallery-card").first().click();
+  await expect(page.locator("#favorite-button")).toBeVisible();
   await page.getByRole("button", { name: "Copy & rerun" }).click();
 
   await expect(page.locator("#detail-title")).toHaveText("Loading job...");
   await expect(page.locator("#detail-placeholder")).toContainText(
     "Loading selected job...",
   );
+  await expect(page.locator("#favorite-button")).toBeHidden();
   await expect(page.getByRole("button", { name: "Cancel" })).toBeHidden();
 
   await expect(page.locator(".filter-chip.is-active")).toHaveAttribute(

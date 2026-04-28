@@ -895,6 +895,13 @@ function renderDetail() {
     els.detailPromptToggle.classList.add("hidden");
     els.detailReference.classList.add("hidden");
     els.metaGrid.innerHTML = "";
+    els.favoriteButton.classList.add("hidden");
+    els.favoriteButton.classList.remove("is-active");
+    els.favoriteButton.textContent = "";
+    els.favoriteButton.removeAttribute("aria-pressed");
+    els.favoriteButton.removeAttribute("aria-label");
+    els.favoriteButton.title = "";
+    els.favoriteButton.onclick = null;
     els.duplicateButton.classList.add("hidden");
     els.retryButton.classList.add("hidden");
     els.cancelButton.classList.add("hidden");
