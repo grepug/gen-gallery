@@ -14,6 +14,7 @@ from typing import Any, Iterator, Optional
 from .schemas import JobResponse
 
 FAVORITE_TAG = "favorite"
+FAVORITE_TAG_SQL_PATTERN = '%"favorite"%'
 
 
 def utcnow() -> str:
@@ -824,13 +825,17 @@ class JobStore:
 
     def _count_favorites(self) -> int:
         with self.connect() as connection:
-            rows = connection.execute("SELECT status, tags_json FROM jobs").fetchall()
-        return sum(
-            1
-            for row in rows
-            if row["status"] == "succeeded"
-            and has_favorite_tag(json.loads(row["tags_json"] or "[]"))
-        )
+            return int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM jobs
+                    WHERE status = 'succeeded'
+                      AND tags_json LIKE ?
+                    """,
+                    (FAVORITE_TAG_SQL_PATTERN,),
+                ).fetchone()[0]
+            )
 
     def _list_favorite_jobs(
         self,
@@ -846,9 +851,25 @@ class JobStore:
                 f"""
                 SELECT *
                 FROM jobs
+                WHERE status = 'succeeded'
+                  AND tags_json LIKE ?
                 ORDER BY {order_by}
+                LIMIT ? OFFSET ?
                 """
+                ,
+                (FAVORITE_TAG_SQL_PATTERN, limit, offset),
             ).fetchall()
+            total = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM jobs
+                    WHERE status = 'succeeded'
+                      AND tags_json LIKE ?
+                    """,
+                    (FAVORITE_TAG_SQL_PATTERN,),
+                ).fetchone()[0]
+            )
             count_rows = connection.execute(
                 """
                 SELECT status, COUNT(*) AS count
@@ -856,12 +877,6 @@ class JobStore:
                 GROUP BY status
                 """
             ).fetchall()
-        favorite_rows = [
-            row
-            for row in rows
-            if row["status"] == "succeeded"
-            and has_favorite_tag(json.loads(row["tags_json"] or "[]"))
-        ]
         counts = {
             "queued": 0,
             "running": 0,
@@ -869,14 +884,13 @@ class JobStore:
             "succeeded": 0,
             "failed": 0,
             "canceled": 0,
-            "favorites": len(favorite_rows),
+            "favorites": total,
         }
         for row in count_rows:
             status = str(row["status"])
             if status in counts:
                 counts[status] = int(row["count"])
-        paged_rows = favorite_rows[offset : offset + limit]
-        return [self._decode_row(row) for row in paged_rows], len(favorite_rows), counts
+        return [self._decode_row(row) for row in rows], total, counts
 
     def _round_robin_keys(
         self,
