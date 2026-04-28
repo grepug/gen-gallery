@@ -42,6 +42,7 @@ const state = {
   isLoading: false,
   loadingMode: null,
   requestSerial: 0,
+  dataEpoch: 0,
   selectedId: null,
   modalOpen: false,
   immersiveMode: false,
@@ -568,9 +569,9 @@ async function toggleFavorite(job) {
     method: shouldFavorite ? "POST" : "DELETE",
   });
   if (updatedJob) {
-    const canApplyLocally =
-      !state.isLoading && state.jobs.some((item) => item.id === updatedJob.id);
+    const canApplyLocally = state.jobs.some((item) => item.id === updatedJob.id);
     if (canApplyLocally) {
+      state.dataEpoch += 1;
       applyFavoriteMutation(updatedJob);
     } else {
       if (state.isLoading) {
@@ -1229,6 +1230,7 @@ function render({ galleryMode = "full" } = {}) {
 async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
   if (state.isLoading) return;
   const requestSerial = ++state.requestSerial;
+  const requestDataEpoch = state.dataEpoch;
   const preferredSelectedId = preserveSelection ? state.selectedId : null;
   const desiredLoadedCount =
     reset && preserveSelection
@@ -1260,7 +1262,11 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       status: state.filter,
       sort: state.sort,
     });
-    if (requestSerial !== state.requestSerial) return;
+    if (
+      requestSerial !== state.requestSerial ||
+      requestDataEpoch !== state.dataEpoch
+    )
+      return;
 
     let nextItems = Array.isArray(payload.items) ? payload.items : [];
     if (reset && preserveSelection) {
@@ -1281,7 +1287,11 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
           status: state.filter,
           sort: state.sort,
         });
-        if (requestSerial !== state.requestSerial) return;
+        if (
+          requestSerial !== state.requestSerial ||
+          requestDataEpoch !== state.dataEpoch
+        )
+          return;
         const pageItems = Array.isArray(nextPage.items) ? nextPage.items : [];
         if (!pageItems.length) break;
         nextItems = [...nextItems, ...pageItems];

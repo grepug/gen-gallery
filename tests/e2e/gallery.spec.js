@@ -564,7 +564,7 @@ test("favoriting wins over an in-flight stale refresh response", async ({ page }
 
   await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
   await expect(firstCardHeart).toHaveAttribute("aria-pressed", "true");
-  expect(jobsRequestCount).toBe(3);
+  expect(jobsRequestCount).toBe(2);
 });
 
 test("copy and rerun creates a fresh queued job and switches to active jobs", async ({
