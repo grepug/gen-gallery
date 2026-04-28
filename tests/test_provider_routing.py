@@ -308,6 +308,70 @@ class ProviderRoutingTests(unittest.TestCase):
             multi_edit_response.json()["detail"],
         )
 
+    def test_retry_and_duplicate_reject_unsupported_shapes_in_sdk_only_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {
+                "IMAGEGEN_SERVER_HOME": temp_dir,
+                "IMAGE_API_KEYS_JSON": """
+                [
+                  {
+                    "name":"sdk-c",
+                    "api_key":"sk-c",
+                    "transport":"openai_sdk",
+                    "base_url":"https://lingsuan.nmyh.cc/v1",
+                    "tool_model":"gpt-image-2",
+                    "concurrency":5
+                  }
+                ]
+                """,
+                "OPENAI_BASE_URL": "https://api.example.com/v1",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                with patch(
+                    "imagegen_server.app.WorkerPool.start",
+                    new_callable=AsyncMock,
+                ):
+                    with patch(
+                        "imagegen_server.app.WorkerPool.stop",
+                        new_callable=AsyncMock,
+                    ):
+                        app = create_app()
+                        store = app.state.store
+                        job = store.create_job(
+                            prompt="hello",
+                            image_action="generate",
+                            model_override=None,
+                            tool_model_override=None,
+                            max_retries=1,
+                            retry_delay_seconds=60,
+                            input_files=[
+                                {
+                                    "filename": "ref1.png",
+                                    "kind": "input",
+                                    "size_bytes": 3,
+                                }
+                            ],
+                        )
+                        with store.connect() as connection:
+                            connection.execute(
+                                "UPDATE jobs SET status = 'failed' WHERE id = ?",
+                                (job["id"],),
+                            )
+                        client = TestClient(app)
+                        retry_response = client.post(f"/jobs/{job['id']}/retry")
+                        duplicate_response = client.post(f"/jobs/{job['id']}/duplicate")
+
+        self.assertEqual(retry_response.status_code, 409)
+        self.assertIn(
+            "No configured API key supports this request shape",
+            retry_response.json()["detail"],
+        )
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertIn(
+            "No configured API key supports this request shape",
+            duplicate_response.json()["detail"],
+        )
+
     def test_sdk_transport_uses_images_generate_for_generate_jobs(self) -> None:
         fake_response = SimpleNamespace(
             data=[SimpleNamespace(b64_json="cG5n")]

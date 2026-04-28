@@ -58,6 +58,23 @@ def create_app() -> FastAPI:
         "updated_asc": ("updated_at", "ASC"),
     }
 
+    def request_shape_supported(image_action: str, input_count: int) -> bool:
+        return any(
+            key_supports_request(
+                key_config,
+                image_action,
+                input_count,
+            )
+            for key_config in settings.api_keys
+        )
+
+    def unsupported_shape_detail() -> str:
+        return (
+            "No configured API key supports this request shape. "
+            "SDK-backed keys currently require image_action=edit "
+            "with exactly one reference image."
+        )
+
     @app.on_event("startup")
     async def on_startup() -> None:
         await asyncio.to_thread(store.requeue_interrupted_jobs)
@@ -127,21 +144,10 @@ def create_app() -> FastAPI:
             )
             await upload.close()
 
-        if not any(
-            key_supports_request(
-                key_config,
-                image_action,
-                len(uploaded_files),
-            )
-            for key_config in settings.api_keys
-        ):
+        if not request_shape_supported(image_action, len(uploaded_files)):
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "No configured API key supports this request shape. "
-                    "SDK-backed keys currently require image_action=edit "
-                    "with exactly one reference image."
-                ),
+                detail=unsupported_shape_detail(),
             )
 
         job_id = str(uuid.uuid4())
@@ -180,6 +186,15 @@ def create_app() -> FastAPI:
     @app.post("/jobs/{job_id}/retry", response_model=JobResponse)
     async def retry_job(job_id: str, request: Request) -> JobResponse:
         try:
+            source_job = store.get_job(job_id)
+            if not request_shape_supported(
+                str(source_job["image_action"]),
+                len(source_job["input_files"]),
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=unsupported_shape_detail(),
+                )
             job = store.retry_failed_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
@@ -191,6 +206,14 @@ def create_app() -> FastAPI:
     async def duplicate_job(job_id: str, request: Request) -> JobResponse:
         try:
             source_job = store.get_job(job_id)
+            if not request_shape_supported(
+                str(source_job["image_action"]),
+                len(source_job["input_files"]),
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=unsupported_shape_detail(),
+                )
             job = store.duplicate_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
