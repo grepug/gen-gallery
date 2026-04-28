@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
+
 from imagegen_server.config import load_settings
+from imagegen_server.errors import ImageGenerationError
 from imagegen_server.openai_client import (
     OpenAIImageResult,
     generate_image,
@@ -175,6 +178,152 @@ class ProviderRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.image_bytes, b"png")
         self.assertEqual(result.seen_events, ["images.generate"])
+
+    def test_sdk_transport_uses_images_edit_for_edit_jobs(self) -> None:
+        edit_calls: list[dict[str, object]] = []
+        captured_payloads: list[dict[str, object]] = []
+
+        class FakeHttpResponse:
+            status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return {"data": [{"b64_json": "cG5n"}]}
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class FakeHttpClient:
+            def build_request(self, method, url, **kwargs):
+                edit_calls.append(
+                    {
+                        "method": method,
+                        "url": url,
+                        **kwargs,
+                    }
+                )
+                return kwargs
+
+            def send(self, request):
+                image_name, image_handle, image_mime = request["files"]["image"]
+                mask_name, mask_handle, mask_mime = request["files"]["mask"]
+                image_bytes = image_handle.read()
+                mask_bytes = mask_handle.read()
+                with tempfile.TemporaryDirectory() as inspect_dir:
+                    image_path = Path(inspect_dir) / "image.png"
+                    mask_path = Path(inspect_dir) / "mask.png"
+                    image_path.write_bytes(image_bytes)
+                    mask_path.write_bytes(mask_bytes)
+                    with Image.open(image_path) as prepared_image:
+                        prepared_size = prepared_image.size
+                        prepared_mode = prepared_image.mode
+                    with Image.open(mask_path) as prepared_mask:
+                        prepared_mask_size = prepared_mask.size
+                        prepared_mask_mode = prepared_mask.mode
+                captured_payloads.append(
+                    {
+                        "image_size": prepared_size,
+                        "image_mode": prepared_mode,
+                        "image_name": image_name,
+                        "image_mime": image_mime,
+                        "mask_size": prepared_mask_size,
+                        "mask_mode": prepared_mask_mode,
+                        "mask_name": mask_name,
+                        "mask_mime": mask_mime,
+                        "mask_bytes": mask_bytes,
+                    }
+                )
+                return FakeHttpResponse()
+
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=lambda **kwargs: SimpleNamespace(
+                    data=[SimpleNamespace(b64_json="cG5n")]
+                ),
+            ),
+            _client=FakeHttpClient(),
+            base_url="https://lingsuan.nmyh.cc/v1/",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = Path(temp_dir) / "ref.jpg"
+            Image.new("RGB", (800, 600), (255, 64, 128)).save(
+                image_path,
+                format="JPEG",
+            )
+            with patch("imagegen_server.openai_client.OpenAI", return_value=fake_client):
+                result = generate_image_via_openai_sdk(
+                    base_url="https://lingsuan.nmyh.cc/v1",
+                    api_key="sk-test",
+                    model="gpt-5.5",
+                    tool_model="gpt-image-2",
+                    image_action="edit",
+                    prompt="hello",
+                    reference_images=[image_path],
+                    timeout_seconds=60,
+                )
+
+        self.assertEqual(result.image_bytes, b"png")
+        self.assertEqual(result.seen_events, ["images.edit"])
+        self.assertEqual(len(edit_calls), 1)
+        self.assertEqual(edit_calls[0]["method"], "POST")
+        self.assertEqual(
+            edit_calls[0]["url"],
+            "https://lingsuan.nmyh.cc/v1/images/edits",
+        )
+        self.assertEqual(edit_calls[0]["data"]["model"], "gpt-image-2")
+        self.assertEqual(edit_calls[0]["data"]["prompt"], "hello")
+        self.assertEqual(edit_calls[0]["data"]["output_format"], "png")
+        self.assertEqual(edit_calls[0]["data"]["size"], "1024x1024")
+        self.assertEqual(edit_calls[0]["data"]["response_format"], "b64_json")
+        self.assertEqual(
+            edit_calls[0]["headers"]["Authorization"],
+            "Bearer sk-test",
+        )
+        self.assertEqual(captured_payloads[0]["image_size"], (1024, 1024))
+        self.assertEqual(captured_payloads[0]["image_mode"], "RGBA")
+        self.assertEqual(captured_payloads[0]["image_name"], "edit-image.png")
+        self.assertEqual(captured_payloads[0]["image_mime"], "image/png")
+        self.assertEqual(captured_payloads[0]["mask_size"], (1024, 1024))
+        self.assertEqual(captured_payloads[0]["mask_mode"], "RGBA")
+        self.assertEqual(captured_payloads[0]["mask_name"], "edit-mask.png")
+        self.assertEqual(captured_payloads[0]["mask_mime"], "image/png")
+        self.assertTrue(captured_payloads[0]["mask_bytes"].startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_sdk_transport_rejects_multiple_reference_images_for_edit_jobs(self) -> None:
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=lambda **kwargs: SimpleNamespace(
+                    data=[SimpleNamespace(b64_json="cG5n")]
+                ),
+            ),
+            _client=SimpleNamespace(
+                build_request=lambda *args, **kwargs: kwargs,
+                send=lambda request: request,
+            ),
+            base_url="https://lingsuan.nmyh.cc/v1/",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_path = Path(temp_dir) / "first.png"
+            second_path = Path(temp_dir) / "second.png"
+            Image.new("RGBA", (400, 400), (255, 255, 255, 255)).save(first_path)
+            Image.new("RGBA", (400, 400), (255, 255, 255, 255)).save(second_path)
+
+            with patch("imagegen_server.openai_client.OpenAI", return_value=fake_client):
+                with self.assertRaises(ImageGenerationError) as captured:
+                    generate_image_via_openai_sdk(
+                        base_url="https://lingsuan.nmyh.cc/v1",
+                        api_key="sk-test",
+                        model="gpt-5.5",
+                        tool_model="gpt-image-2",
+                        image_action="edit",
+                        prompt="hello",
+                        reference_images=[first_path, second_path],
+                        timeout_seconds=60,
+                    )
+
+        self.assertIn("exactly one reference image", str(captured.exception))
+        self.assertFalse(captured.exception.retryable)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import ApiKeyConfig, Settings
-from .openai_client import ImageGenerationError, generate_image
+from .errors import ImageGenerationError
+from .openai_client import generate_image
 from .storage import JobStore, utcnow
 
 

@@ -51,6 +51,14 @@ Optional per-key fields:
 - `tool_model`: overrides the global `OPENAI_IMAGE_TOOL_MODEL` for that key
 - `concurrency`: number of worker slots for that key, default `1`
 
+SDK-backed reference-image edits currently use a provider-specific preprocessing path:
+
+- only the `openai_sdk` transport uses it
+- the current contract supports exactly one uploaded reference image
+- the server converts that image into a square `1024x1024` PNG and sends an explicit mask
+- this path is validated against `https://lingsuan.nmyh.cc/v1`
+- other SDK-compatible upstreams may need different edit shaping
+
 Optional variables:
 
 ```bash
@@ -117,8 +125,7 @@ With references:
 curl -X POST http://127.0.0.1:8000/jobs \
   -F 'prompt=Turn this into a premium anime illustration' \
   -F 'image_action=edit' \
-  -F 'reference_images=@/absolute/path/ref1.png' \
-  -F 'reference_images=@/absolute/path/ref2.jpg'
+  -F 'reference_images=@/absolute/path/ref1.png'
 ```
 
 ### Query a job
