@@ -568,7 +568,18 @@ async function toggleFavorite(job) {
     method: shouldFavorite ? "POST" : "DELETE",
   });
   if (updatedJob) {
-    applyFavoriteMutation(updatedJob);
+    const canApplyLocally =
+      !state.isLoading && state.jobs.some((item) => item.id === updatedJob.id);
+    if (canApplyLocally) {
+      applyFavoriteMutation(updatedJob);
+    } else {
+      if (state.isLoading) {
+        state.requestSerial += 1;
+        state.isLoading = false;
+        state.loadingMode = null;
+      }
+      await fetchJobs({ preserveSelection: true });
+    }
   }
   setMessage(shouldFavorite ? "Added to favorites." : "Removed from favorites.");
 }

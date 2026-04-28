@@ -453,6 +453,120 @@ test("favoriting from the list keeps scroll position and avoids a full list refr
   expect(cardPreserved).toBe(true);
 });
 
+test("favoriting reconciles the current filter when the response returns after a filter change", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  const jobs = Array.from({ length: 3 }, (_, index) => buildJob(index));
+  const favoriteSet = new Set();
+
+  const serializeJob = (job) => ({
+    ...job,
+    tags: favoriteSet.has(job.id) ? ["favorite"] : [],
+    is_favorite: favoriteSet.has(job.id),
+  });
+
+  await page.route("**/jobs?**", async (route) => {
+    const url = new URL(route.request().url());
+    const filter = url.searchParams.get("status") || "all";
+    const items = jobs
+      .map((job) => serializeJob(job))
+      .filter((job) => (filter === "favorites" ? job.is_favorite : true));
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items,
+        total: items.length,
+        limit: items.length,
+        offset: 0,
+        counts: countStatuses(jobs.map((job) => serializeJob(job))),
+      }),
+    });
+  });
+
+  await page.route("**/jobs/*/favorite", async (route) => {
+    const match = route.request().url().match(/\/jobs\/([^/]+)\/favorite/);
+    const jobId = match?.[1];
+    expect(jobId).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    favoriteSet.add(jobId);
+    const job = jobs.find((item) => item.id === jobId);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(serializeJob(job)),
+    });
+  });
+
+  await page.goto("/");
+  await page.locator(".gallery-card").first().locator(".favorite-button").click();
+  await page.getByRole("button", { name: /^Favorites\(0\)$/ }).click();
+
+  await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
+  await expect(page.locator(".gallery-card")).toHaveCount(1);
+  await expect(page.locator(".gallery-card").first().locator(".favorite-button")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+test("favoriting wins over an in-flight stale refresh response", async ({ page }) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  const jobs = Array.from({ length: 3 }, (_, index) => buildJob(index));
+  const favoriteSet = new Set();
+  let jobsRequestCount = 0;
+
+  const serializeJob = (job, favorites = favoriteSet) => ({
+    ...job,
+    tags: favorites.has(job.id) ? ["favorite"] : [],
+    is_favorite: favorites.has(job.id),
+  });
+
+  await page.route("**/jobs?**", async (route) => {
+    jobsRequestCount += 1;
+    const snapshotFavorites = new Set(favoriteSet);
+    const items = jobs.map((job) => serializeJob(job, snapshotFavorites));
+    if (jobsRequestCount === 2) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items,
+        total: items.length,
+        limit: items.length,
+        offset: 0,
+        counts: countStatuses(items),
+      }),
+    });
+  });
+
+  await page.route("**/jobs/*/favorite", async (route) => {
+    const match = route.request().url().match(/\/jobs\/([^/]+)\/favorite/);
+    const jobId = match?.[1];
+    expect(jobId).toBeTruthy();
+    favoriteSet.add(jobId);
+    const job = jobs.find((item) => item.id === jobId);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(serializeJob(job)),
+    });
+  });
+
+  await page.goto("/");
+  const firstCardHeart = page.locator(".gallery-card").first().locator(".favorite-button");
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await firstCardHeart.click();
+
+  await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
+  await expect(firstCardHeart).toHaveAttribute("aria-pressed", "true");
+  expect(jobsRequestCount).toBe(3);
+});
+
 test("copy and rerun creates a fresh queued job and switches to active jobs", async ({
   page,
 }) => {
