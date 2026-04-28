@@ -50,6 +50,27 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(sdk_key.tool_model, "gpt-image-2")
         self.assertEqual(sdk_key.concurrency, 5)
 
+    def test_load_settings_strips_trailing_slash_from_per_key_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {
+                "IMAGEGEN_SERVER_HOME": temp_dir,
+                "IMAGE_API_KEYS_JSON": """
+                [
+                  {
+                    "name":"sdk-c",
+                    "api_key":"sk-c",
+                    "transport":"openai_sdk",
+                    "base_url":"https://lingsuan.nmyh.cc/v1/"
+                  }
+                ]
+                """,
+                "OPENAI_BASE_URL": "https://api.example.com/v1",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                settings = load_settings()
+
+        self.assertEqual(settings.api_keys[0].base_url, "https://lingsuan.nmyh.cc/v1")
+
     def test_claim_next_job_respects_key_capacity_and_round_robin(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             server_home = Path(temp_dir)

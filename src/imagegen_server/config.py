@@ -110,7 +110,10 @@ def _parse_api_keys(raw: Optional[str]) -> list[ApiKeyConfig]:
                 name=name,
                 api_key=api_key,
                 transport=raw_transport,
-                base_url=_optional_str(item.get("base_url") or item.get("baseURL")),
+                base_url=(
+                    _optional_str(item.get("base_url") or item.get("baseURL")) or ""
+                ).rstrip("/")
+                or None,
                 model=_optional_str(item.get("model")),
                 tool_model=_optional_str(
                     item.get("tool_model") or item.get("toolModel")
