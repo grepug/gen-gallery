@@ -559,6 +559,38 @@ class JobStore:
         self.append_event(job_id, "manual_retry_requested")
         return self.get_job(job_id)
 
+    def duplicate_job(self, job_id: str) -> dict[str, Any]:
+        source_job = self.get_job(job_id)
+        duplicated_job_id = str(uuid.uuid4())
+        duplicated_input_files = json.loads(json.dumps(source_job["input_files"]))
+        duplicated_job_dir = self.jobs_dir / duplicated_job_id
+
+        try:
+            self.make_job_dirs(duplicated_job_id)
+            for item in duplicated_input_files:
+                storage_path = item.get("storage_path")
+                if isinstance(storage_path, str) and storage_path:
+                    continue
+                source_path = self.resolve_input_file_path(job_id, item)
+                target_path = duplicated_job_dir / "input" / str(item["filename"])
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+
+            return self.create_job(
+                job_id=duplicated_job_id,
+                prompt=str(source_job["prompt"]),
+                image_action=str(source_job["image_action"]),
+                model_override=source_job["model"],
+                tool_model_override=source_job["tool_model"],
+                max_retries=int(source_job["max_retries"]),
+                retry_delay_seconds=int(source_job["retry_delay_seconds"]),
+                input_files=duplicated_input_files,
+            )
+        except Exception:
+            if duplicated_job_dir.exists():
+                shutil.rmtree(duplicated_job_dir, ignore_errors=True)
+            raise
+
     def delete_job(self, job_id: str) -> None:
         shared_storage_paths: list[str] = []
         with self.connect() as connection:
