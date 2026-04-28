@@ -19,6 +19,7 @@ const SORT_OPTIONS = {
 };
 const DESKTOP_COLUMN_OPTIONS = new Set(["2", "3", "4"]);
 const JOB_LIST_CACHE_KEY_PREFIX = "imagegen-gallery:jobs:v2";
+const JOB_API_MAX_PAGE_SIZE = 200;
 
 const state = {
   jobs: [],
@@ -82,6 +83,7 @@ const els = {
   detailReference: document.getElementById("detail-reference"),
   detailReferenceImage: document.getElementById("detail-reference-image"),
   metaGrid: document.getElementById("meta-grid"),
+  duplicateButton: document.getElementById("duplicate-button"),
   retryButton: document.getElementById("retry-button"),
   cancelButton: document.getElementById("cancel-button"),
   deleteButton: document.getElementById("delete-button"),
@@ -179,6 +181,20 @@ function totalJobCountFromCounts(counts) {
 
 function filteredJobs() {
   return state.jobs;
+}
+
+function compareJobs(left, right, sort = state.sort) {
+  const option = SORT_OPTIONS[sort] || SORT_OPTIONS.created_desc;
+  const leftValue = Date.parse(left[option.field] || 0);
+  const rightValue = Date.parse(right[option.field] || 0);
+  if (leftValue === rightValue) {
+    return option.direction === "asc"
+      ? String(left.id).localeCompare(String(right.id))
+      : String(right.id).localeCompare(String(left.id));
+  }
+  return option.direction === "asc"
+    ? leftValue - rightValue
+    : rightValue - leftValue;
 }
 
 function cacheKeyForCurrentQuery() {
@@ -303,6 +319,14 @@ function ensureSelection() {
   if (!jobs.length) {
     state.selectedId = null;
     state.modalOpen = false;
+    return;
+  }
+  if (
+    state.isLoading &&
+    state.loadingMode === "refresh" &&
+    state.selectedId &&
+    !jobs.some((job) => job.id === state.selectedId)
+  ) {
     return;
   }
   if (!jobs.some((job) => job.id === state.selectedId)) {
@@ -828,7 +852,13 @@ function schedulePreviewTransform() {
 function renderDetail() {
   const jobs = filteredJobs();
   const selectedJob = jobs.find((job) => job.id === state.selectedId);
-  const isOpen = Boolean(selectedJob && state.modalOpen);
+  const pendingSelectedJob =
+    state.modalOpen &&
+    state.isLoading &&
+    state.loadingMode === "refresh" &&
+    state.selectedId &&
+    !selectedJob;
+  const isOpen = Boolean(state.modalOpen && (selectedJob || pendingSelectedJob));
 
   document.body.classList.toggle("modal-open", isOpen);
   document.body.classList.toggle(
@@ -850,6 +880,27 @@ function renderDetail() {
     : "Fullscreen";
   els.detailEmpty.classList.toggle("hidden", isOpen);
   els.detailContent.classList.toggle("hidden", !isOpen);
+  if (pendingSelectedJob) {
+    els.detailStrip.innerHTML = "";
+    els.detailPreview.removeAttribute("src");
+    els.detailPreview.classList.add("hidden");
+    els.detailPlaceholder.textContent = "Loading selected job...";
+    els.detailPlaceholder.classList.remove("hidden");
+    els.detailTitle.textContent = "Loading job...";
+    els.detailStatus.className = "status-pill hidden";
+    els.detailStatus.textContent = "";
+    els.detailPromptPreview.textContent = "";
+    els.detailPromptFull.classList.add("hidden");
+    els.detailPromptScroll.textContent = "";
+    els.detailPromptToggle.classList.add("hidden");
+    els.detailReference.classList.add("hidden");
+    els.metaGrid.innerHTML = "";
+    els.duplicateButton.classList.add("hidden");
+    els.retryButton.classList.add("hidden");
+    els.cancelButton.classList.add("hidden");
+    els.deleteButton.classList.add("hidden");
+    return;
+  }
   if (!selectedJob || !state.modalOpen) return;
 
   renderDetailStrip(selectedJob, jobs);
@@ -923,6 +974,50 @@ function renderDetail() {
   const canCancel = ACTIVE_STATUSES.has(selectedJob.status);
   const canDelete = !canCancel;
 
+  els.duplicateButton.classList.remove("hidden");
+  els.duplicateButton.onclick = async () => {
+    const previousState = {
+      filter: state.filter,
+      selectedId: state.selectedId,
+      modalOpen: state.modalOpen,
+      promptExpanded: state.promptExpanded,
+      immersiveMode: state.immersiveMode,
+      immersiveChromeVisible: state.immersiveChromeVisible,
+      previewZoom: state.previewZoom,
+      previewPanX: state.previewPanX,
+      previewPanY: state.previewPanY,
+      previewDragging: state.previewDragging,
+    };
+    try {
+      const duplicatedJob = await requestJobMutation(
+        `/jobs/${selectedJob.id}/duplicate`,
+        { method: "POST" },
+      );
+      state.filter = "active";
+      state.selectedId = duplicatedJob.id;
+      state.modalOpen = true;
+      state.promptExpanded = false;
+      state.immersiveMode = false;
+      state.immersiveChromeVisible = true;
+      resetPreviewViewport();
+      await fetchJobs({ preserveSelection: true });
+      setMessage("Job copied and queued.");
+    } catch (error) {
+      state.filter = previousState.filter;
+      state.selectedId = previousState.selectedId;
+      state.modalOpen = previousState.modalOpen;
+      state.promptExpanded = previousState.promptExpanded;
+      state.immersiveMode = previousState.immersiveMode;
+      state.immersiveChromeVisible = previousState.immersiveChromeVisible;
+      state.previewZoom = previousState.previewZoom;
+      state.previewPanX = previousState.previewPanX;
+      state.previewPanY = previousState.previewPanY;
+      state.previewDragging = previousState.previewDragging;
+      render();
+      setMessage(error.message);
+    }
+  };
+
   els.retryButton.classList.toggle("hidden", !canRetry);
   els.cancelButton.classList.toggle("hidden", !canCancel);
   els.deleteButton.classList.toggle("hidden", !canDelete);
@@ -976,12 +1071,33 @@ function setMessage(message) {
 }
 
 async function mutateJob(path, options) {
+  await requestJobMutation(path, options);
+  await fetchJobs({ preserveSelection: true });
+}
+
+async function requestJobMutation(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || "Request failed");
   }
-  await fetchJobs({ preserveSelection: true });
+  if (response.status === 204) return null;
+  return response.json().catch(() => null);
+}
+
+async function fetchJobsPage({ limit, offset, status, sort }) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    status,
+    sort,
+  });
+  const response = await fetch(`/jobs?${params.toString()}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "Failed to load jobs");
+  }
+  return response.json();
 }
 
 function render({ galleryMode = "full" } = {}) {
@@ -999,10 +1115,12 @@ function render({ galleryMode = "full" } = {}) {
 async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
   if (state.isLoading) return;
   const requestSerial = ++state.requestSerial;
-  const requestLimit =
+  const preferredSelectedId = preserveSelection ? state.selectedId : null;
+  const desiredLoadedCount =
     reset && preserveSelection
       ? Math.max(state.pageSize, state.jobs.length || state.pageSize)
       : state.pageSize;
+  const requestLimit = Math.min(JOB_API_MAX_PAGE_SIZE, desiredLoadedCount);
   const offset = reset ? 0 : state.jobs.length;
 
   if (reset && !preserveSelection) {
@@ -1021,26 +1139,53 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
         ? "initial"
         : "append";
   render({ galleryMode: reset ? "full" : "none" });
-  const params = new URLSearchParams({
-    limit: String(requestLimit),
-    offset: String(offset),
-    status: state.filter,
-    sort: state.sort,
-  });
   try {
-    const response = await fetch(`/jobs?${params.toString()}`);
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.detail || "Failed to load jobs");
-    }
-    const payload = await response.json();
+    const payload = await fetchJobsPage({
+      limit: requestLimit,
+      offset,
+      status: state.filter,
+      sort: state.sort,
+    });
     if (requestSerial !== state.requestSerial) return;
-    const nextItems = Array.isArray(payload.items) ? payload.items : [];
+
+    let nextItems = Array.isArray(payload.items) ? payload.items : [];
+    if (reset && preserveSelection) {
+      let nextOffset = nextItems.length;
+      while (nextOffset < Number(payload.total || 0)) {
+        const selectionMissing =
+          preferredSelectedId &&
+          !nextItems.some((job) => job.id === preferredSelectedId);
+        if (
+          nextItems.length >= Math.min(desiredLoadedCount, Number(payload.total || 0)) &&
+          !selectionMissing
+        ) {
+          break;
+        }
+        const nextPage = await fetchJobsPage({
+          limit: state.pageSize,
+          offset: nextOffset,
+          status: state.filter,
+          sort: state.sort,
+        });
+        if (requestSerial !== state.requestSerial) return;
+        const pageItems = Array.isArray(nextPage.items) ? nextPage.items : [];
+        if (!pageItems.length) break;
+        nextItems = [...nextItems, ...pageItems];
+        nextOffset += pageItems.length;
+      }
+    }
+
+    nextItems = [...nextItems].sort((left, right) =>
+      compareJobs(left, right, state.sort),
+    );
     state.jobs = reset ? nextItems : [...state.jobs, ...nextItems];
     state.filteredTotal = payload.total;
     state.counts = payload.counts || state.counts;
     state.totalJobs = totalJobCountFromCounts(state.counts);
     state.hasMore = state.jobs.length < state.filteredTotal;
+    if (preferredSelectedId) {
+      state.selectedId = preferredSelectedId;
+    }
     if (reset) {
       writeCachedJobs({
         items: nextItems,

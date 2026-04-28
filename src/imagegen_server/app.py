@@ -141,27 +141,7 @@ def create_app() -> FastAPI:
         )
         final_input_files = list(job["input_files"])
 
-        store.write_request_meta(
-            job_id,
-            {
-                "prompt": prompt.strip(),
-                "image_action": image_action,
-                "model": model,
-                "tool_model": tool_model,
-                "max_retries": effective_max_retries,
-                "retry_delay_seconds": effective_retry_delay,
-                "reference_images": [
-                    {
-                        "filename": item["filename"],
-                        "size_bytes": item["size_bytes"],
-                        "storage_path": item["storage_path"],
-                        "content_hash": item["content_hash"],
-                        "original_filename": item["original_filename"],
-                    }
-                    for item in final_input_files
-                ],
-            },
-        )
+        store.write_request_meta(job_id, _build_request_meta_payload(job))
         store.append_event(
             job_id,
             "job_created",
@@ -188,6 +168,29 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="job not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return job_to_response(job, str(request.base_url).rstrip("/"))
+
+    @app.post("/jobs/{job_id}/duplicate", response_model=JobResponse)
+    async def duplicate_job(job_id: str, request: Request) -> JobResponse:
+        try:
+            source_job = store.get_job(job_id)
+            job = store.duplicate_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+
+        store.write_request_meta(
+            str(job["id"]),
+            _build_request_meta_payload(job, source_job_id=str(source_job["id"])),
+        )
+        store.append_event(
+            str(job["id"]),
+            "job_duplicated",
+            {
+                "source_job_id": str(source_job["id"]),
+                "source_status": str(source_job["status"]),
+                "input_count": len(job["input_files"]),
+            },
+        )
         return job_to_response(job, str(request.base_url).rstrip("/"))
 
     @app.post("/jobs/{job_id}/cancel", response_model=JobResponse)
@@ -392,3 +395,31 @@ def _replace_runtime_data(
 
     for source, destination in destinations:
         source.replace(destination)
+
+
+def _build_request_meta_payload(
+    job: dict[str, object],
+    *,
+    source_job_id: Optional[str] = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "prompt": job["prompt"],
+        "image_action": job["image_action"],
+        "model": job["model"],
+        "tool_model": job["tool_model"],
+        "max_retries": job["max_retries"],
+        "retry_delay_seconds": job["retry_delay_seconds"],
+        "reference_images": [
+            {
+                "filename": item["filename"],
+                "size_bytes": item["size_bytes"],
+                "storage_path": item.get("storage_path"),
+                "content_hash": item.get("content_hash"),
+                "original_filename": item.get("original_filename"),
+            }
+            for item in list(job["input_files"])
+        ],
+    }
+    if source_job_id is not None:
+        payload["source_job_id"] = source_job_id
+    return payload
