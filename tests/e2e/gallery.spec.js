@@ -2,7 +2,10 @@ const { test, expect } = require("@playwright/test");
 
 async function clearLocalGalleryCache(page) {
   await page.addInitScript(() => {
-    window.localStorage.clear();
+    if (!window.sessionStorage.getItem("__galleryCacheCleared")) {
+      window.localStorage.clear();
+      window.sessionStorage.setItem("__galleryCacheCleared", "1");
+    }
   });
 }
 
@@ -186,6 +189,7 @@ test("column selector stays hidden on mobile layouts", async ({ page }) => {
 test("reload paints cached jobs before the background refresh finishes", async ({
   page,
 }) => {
+  await clearLocalGalleryCache(page);
   await page.setViewportSize({ width: 1280, height: 1200 });
   await mockJobsWithDelay(page, 40, 900);
 
@@ -200,4 +204,50 @@ test("reload paints cached jobs before the background refresh finishes", async (
   await expect(page.locator("#gallery-status")).toContainText("Refreshing", {
     timeout: 300,
   });
+});
+
+test("mobile viewer keeps fullscreen modal controls easy to reach", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockJobs(page, 8);
+  await page.goto("/");
+
+  await page.locator(".gallery-card").first().click();
+
+  const shellBox = await page.locator(".viewer-shell").boundingBox();
+  expect(shellBox).not.toBeNull();
+  expect(shellBox.width).toBeGreaterThanOrEqual(388);
+  expect(shellBox.height).toBeGreaterThanOrEqual(840);
+  expect(shellBox.x).toBeLessThanOrEqual(1);
+  expect(shellBox.y).toBeLessThanOrEqual(1);
+
+  const closeBox = await page.getByRole("button", { name: "Close" }).boundingBox();
+  expect(closeBox).not.toBeNull();
+  expect(closeBox.x).toBeGreaterThan(220);
+
+  const frameBox = await page.locator(".detail-preview-frame").boundingBox();
+  const sidebarBox = await page.locator(".detail-sidebar").boundingBox();
+  expect(frameBox).not.toBeNull();
+  expect(sidebarBox).not.toBeNull();
+  expect(sidebarBox.y).toBeGreaterThanOrEqual(frameBox.y + frameBox.height - 1);
+
+  await page.getByRole("button", { name: "Fullscreen" }).click();
+  await page.waitForTimeout(2000);
+
+  const topbarOpacity = await page.locator(".viewer-topbar").evaluate((element) => {
+    return getComputedStyle(element).opacity;
+  });
+  expect(topbarOpacity).toBe("1");
+
+  const contentDisplay = await page.locator(".detail-content").evaluate((element) => {
+    return getComputedStyle(element).display;
+  });
+  expect(contentDisplay).toBe("flex");
+
+  const stripBox = await page.locator(".detail-strip").boundingBox();
+  expect(stripBox).not.toBeNull();
+  expect(stripBox.width).toBeGreaterThan(250);
+  expect(stripBox.height).toBeLessThan(120);
 });

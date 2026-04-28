@@ -99,6 +99,20 @@ const IS_SAFARI =
   !/CriOS|Chrome|Chromium|EdgiOS|Edg|Firefox|FxiOS|OPR|OPT/i.test(
     navigator.userAgent,
   );
+const IS_TOUCH_DEVICE =
+  typeof window !== "undefined" &&
+  ("ontouchstart" in window ||
+    (typeof navigator !== "undefined" &&
+      Number(navigator.maxTouchPoints || 0) > 0) ||
+    (window.matchMedia &&
+      window.matchMedia("(pointer: coarse)").matches));
+
+function shouldKeepImmersiveChromeVisible() {
+  return (
+    IS_TOUCH_DEVICE ||
+    (typeof window !== "undefined" && window.innerWidth <= 860)
+  );
+}
 
 function formatTimestamp(value) {
   if (!value) return "—";
@@ -309,7 +323,7 @@ function setImmersiveChromeVisible(visible) {
 
 function scheduleImmersiveChromeHide() {
   window.clearTimeout(state.immersiveChromeTimer);
-  if (!state.immersiveMode) return;
+  if (!state.immersiveMode || shouldKeepImmersiveChromeVisible()) return;
   state.immersiveChromeTimer = window.setTimeout(() => {
     setImmersiveChromeVisible(false);
   }, 1600);
