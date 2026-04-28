@@ -42,6 +42,7 @@ const state = {
   isLoading: false,
   loadingMode: null,
   requestSerial: 0,
+  dataEpoch: 0,
   selectedId: null,
   modalOpen: false,
   immersiveMode: false,
@@ -469,11 +470,118 @@ function favoriteButtonLabel(job) {
   return job.is_favorite ? "Remove from favorites" : "Add to favorites";
 }
 
+function writeCurrentJobsToCache() {
+  writeCachedJobs({
+    items: state.jobs,
+    total: state.filteredTotal,
+    counts: state.counts,
+  });
+}
+
+function syncGallerySelectionState() {
+  [...els.galleryGrid.querySelectorAll(".gallery-card")].forEach((card) => {
+    card.classList.toggle("is-selected", card.dataset.jobId === state.selectedId);
+  });
+}
+
+function syncGalleryFavoriteMutation(jobId) {
+  const jobIndex = state.jobs.findIndex((job) => job.id === jobId);
+  const cardSelector = `.gallery-card[data-job-id="${CSS.escape(jobId)}"]`;
+  const card = els.galleryGrid.querySelector(cardSelector);
+
+  if (jobIndex === -1) {
+    card?.remove();
+    els.galleryEmpty.classList.toggle("hidden", state.jobs.length > 0);
+    syncGallerySelectionState();
+    scheduleGalleryMasonry();
+    return;
+  }
+
+  const job = state.jobs[jobIndex];
+  const actions = card?.querySelector(".card-topline-actions");
+  const existingButton = actions?.querySelector(".favorite-button");
+  if (actions) {
+    if (canFavorite(job)) {
+      const nextButton = createFavoriteButton(job, { compact: true });
+      if (existingButton) {
+        existingButton.replaceWith(nextButton);
+      } else {
+        actions.appendChild(nextButton);
+      }
+    } else {
+      existingButton?.remove();
+    }
+  }
+
+  if (card) {
+    const siblingCards = [...els.galleryGrid.querySelectorAll(".gallery-card")].filter(
+      (candidate) => candidate !== card,
+    );
+    const nextSibling = siblingCards[jobIndex] || null;
+    els.galleryGrid.insertBefore(card, nextSibling);
+  }
+
+  els.galleryEmpty.classList.toggle("hidden", state.jobs.length > 0);
+  syncGallerySelectionState();
+  scheduleGalleryMasonry();
+}
+
+function applyFavoriteMutation(updatedJob) {
+  const previousJob = state.jobs.find((job) => job.id === updatedJob.id);
+  if (!previousJob) return;
+
+  const wasFavorite = Boolean(previousJob.is_favorite);
+  const isFavorite = Boolean(updatedJob.is_favorite);
+
+  state.jobs = state.jobs.map((job) =>
+    job.id === updatedJob.id ? { ...job, ...updatedJob } : job,
+  );
+  state.jobs = [...state.jobs].sort((left, right) =>
+    compareJobs(left, right, state.sort),
+  );
+
+  if (wasFavorite !== isFavorite) {
+    state.counts = {
+      ...state.counts,
+      favorites: Math.max(
+        0,
+        Number(state.counts?.favorites || 0) + (isFavorite ? 1 : -1),
+      ),
+    };
+  }
+
+  if (state.filter === "favorites" && !isFavorite) {
+    state.jobs = state.jobs.filter((job) => job.id !== updatedJob.id);
+    state.filteredTotal = Math.max(0, state.filteredTotal - 1);
+  }
+
+  state.totalJobs = totalJobCountFromCounts(state.counts);
+  state.hasMore = state.jobs.length < state.filteredTotal;
+  ensureSelection();
+  writeCurrentJobsToCache();
+  syncGalleryFavoriteMutation(updatedJob.id);
+  render({ galleryMode: "none" });
+}
+
 async function toggleFavorite(job) {
   const shouldFavorite = !job.is_favorite;
-  await mutateJob(`/jobs/${job.id}/favorite`, {
+  const updatedJob = await requestJobMutation(`/jobs/${job.id}/favorite`, {
     method: shouldFavorite ? "POST" : "DELETE",
   });
+  if (updatedJob) {
+    const canApplyLocally = state.jobs.some((item) => item.id === updatedJob.id);
+    if (canApplyLocally) {
+      state.dataEpoch += 1;
+      applyFavoriteMutation(updatedJob);
+    } else {
+      if (state.isLoading) {
+        state.requestSerial += 1;
+        state.isLoading = false;
+        state.loadingMode = null;
+      }
+      await fetchJobs({ preserveSelection: true });
+    }
+  }
   setMessage(shouldFavorite ? "Added to favorites." : "Removed from favorites.");
 }
 
@@ -573,15 +681,53 @@ function createGalleryCard(job) {
   return card;
 }
 
-function renderGallery({ appendOnly = false } = {}) {
+function syncGalleryCard(card, job) {
+  const nextCard = createGalleryCard(job);
+  card.tabIndex = nextCard.tabIndex;
+  card.dataset.jobId = nextCard.dataset.jobId;
+  card.className = nextCard.className;
+  card.replaceChildren(...nextCard.childNodes);
+}
+
+function reconcileGalleryCards(jobs) {
+  const existingCards = new Map(
+    [...els.galleryGrid.querySelectorAll(".gallery-card")].map((card) => [
+      card.dataset.jobId,
+      card,
+    ]),
+  );
+  const desiredIds = new Set(jobs.map((job) => job.id));
+
+  existingCards.forEach((card, jobId) => {
+    if (!desiredIds.has(jobId)) {
+      card.remove();
+    }
+  });
+
+  let nextSibling = els.galleryGrid.firstElementChild;
+  jobs.forEach((job) => {
+    let card = existingCards.get(job.id);
+    if (card) {
+      syncGalleryCard(card, job);
+    } else {
+      card = createGalleryCard(job);
+    }
+    if (card !== nextSibling) {
+      els.galleryGrid.insertBefore(card, nextSibling);
+    }
+    nextSibling = card.nextElementSibling;
+  });
+}
+
+function renderGallery({ appendOnly = false, reconcileOnly = false } = {}) {
   const jobs = filteredJobs();
   const showSkeletons = state.isLoading && jobs.length === 0;
-  if (!appendOnly) {
+  if (!appendOnly && !reconcileOnly) {
     els.galleryGrid.innerHTML = "";
   }
   els.galleryEmpty.classList.toggle(
     "hidden",
-    jobs.length > 0 || showSkeletons || appendOnly,
+    jobs.length > 0 || showSkeletons || appendOnly || reconcileOnly,
   );
 
   if (showSkeletons) {
@@ -602,6 +748,12 @@ function renderGallery({ appendOnly = false } = {}) {
       `;
       els.galleryGrid.appendChild(card);
     }
+    return;
+  }
+
+  if (reconcileOnly) {
+    reconcileGalleryCards(jobs);
+    scheduleGalleryMasonry();
     return;
   }
 
@@ -1112,6 +1264,8 @@ function render({ galleryMode = "full" } = {}) {
   renderFilterBar();
   if (galleryMode === "full") {
     renderGallery();
+  } else if (galleryMode === "reconcile") {
+    renderGallery({ reconcileOnly: true });
   } else if (galleryMode === "append") {
     renderGallery({ appendOnly: true });
   }
@@ -1122,6 +1276,7 @@ function render({ galleryMode = "full" } = {}) {
 async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
   if (state.isLoading) return;
   const requestSerial = ++state.requestSerial;
+  const requestDataEpoch = state.dataEpoch;
   const preferredSelectedId = preserveSelection ? state.selectedId : null;
   const desiredLoadedCount =
     reset && preserveSelection
@@ -1145,7 +1300,7 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       : reset
         ? "initial"
         : "append";
-  render({ galleryMode: reset ? "full" : "none" });
+  render({ galleryMode: reset ? (preserveSelection ? "none" : "full") : "none" });
   try {
     const payload = await fetchJobsPage({
       limit: requestLimit,
@@ -1153,7 +1308,11 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
       status: state.filter,
       sort: state.sort,
     });
-    if (requestSerial !== state.requestSerial) return;
+    if (
+      requestSerial !== state.requestSerial ||
+      requestDataEpoch !== state.dataEpoch
+    )
+      return;
 
     let nextItems = Array.isArray(payload.items) ? payload.items : [];
     if (reset && preserveSelection) {
@@ -1174,7 +1333,11 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
           status: state.filter,
           sort: state.sort,
         });
-        if (requestSerial !== state.requestSerial) return;
+        if (
+          requestSerial !== state.requestSerial ||
+          requestDataEpoch !== state.dataEpoch
+        )
+          return;
         const pageItems = Array.isArray(nextPage.items) ? nextPage.items : [];
         if (!pageItems.length) break;
         nextItems = [...nextItems, ...pageItems];
@@ -1203,9 +1366,18 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
     ensureSelection();
   } finally {
     if (requestSerial !== state.requestSerial) return;
+    const staleData = requestDataEpoch !== state.dataEpoch;
     state.isLoading = false;
     state.loadingMode = null;
-    render({ galleryMode: reset ? "full" : "append" });
+    render({
+      galleryMode: staleData
+        ? "none"
+        : reset
+          ? preserveSelection
+            ? "reconcile"
+            : "full"
+          : "append",
+    });
   }
 }
 
