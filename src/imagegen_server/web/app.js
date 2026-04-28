@@ -469,11 +469,107 @@ function favoriteButtonLabel(job) {
   return job.is_favorite ? "Remove from favorites" : "Add to favorites";
 }
 
+function writeCurrentJobsToCache() {
+  writeCachedJobs({
+    items: state.jobs,
+    total: state.filteredTotal,
+    counts: state.counts,
+  });
+}
+
+function syncGallerySelectionState() {
+  [...els.galleryGrid.querySelectorAll(".gallery-card")].forEach((card) => {
+    card.classList.toggle("is-selected", card.dataset.jobId === state.selectedId);
+  });
+}
+
+function syncGalleryFavoriteMutation(jobId) {
+  const jobIndex = state.jobs.findIndex((job) => job.id === jobId);
+  const cardSelector = `.gallery-card[data-job-id="${CSS.escape(jobId)}"]`;
+  const card = els.galleryGrid.querySelector(cardSelector);
+
+  if (jobIndex === -1) {
+    card?.remove();
+    els.galleryEmpty.classList.toggle("hidden", state.jobs.length > 0);
+    syncGallerySelectionState();
+    scheduleGalleryMasonry();
+    return;
+  }
+
+  const job = state.jobs[jobIndex];
+  const actions = card?.querySelector(".card-topline-actions");
+  const existingButton = actions?.querySelector(".favorite-button");
+  if (actions) {
+    if (canFavorite(job)) {
+      const nextButton = createFavoriteButton(job, { compact: true });
+      if (existingButton) {
+        existingButton.replaceWith(nextButton);
+      } else {
+        actions.appendChild(nextButton);
+      }
+    } else {
+      existingButton?.remove();
+    }
+  }
+
+  if (card) {
+    const siblingCards = [...els.galleryGrid.querySelectorAll(".gallery-card")].filter(
+      (candidate) => candidate !== card,
+    );
+    const nextSibling = siblingCards[jobIndex] || null;
+    els.galleryGrid.insertBefore(card, nextSibling);
+  }
+
+  els.galleryEmpty.classList.toggle("hidden", state.jobs.length > 0);
+  syncGallerySelectionState();
+  scheduleGalleryMasonry();
+}
+
+function applyFavoriteMutation(updatedJob) {
+  const previousJob = state.jobs.find((job) => job.id === updatedJob.id);
+  if (!previousJob) return;
+
+  const wasFavorite = Boolean(previousJob.is_favorite);
+  const isFavorite = Boolean(updatedJob.is_favorite);
+
+  state.jobs = state.jobs.map((job) =>
+    job.id === updatedJob.id ? { ...job, ...updatedJob } : job,
+  );
+  state.jobs = [...state.jobs].sort((left, right) =>
+    compareJobs(left, right, state.sort),
+  );
+
+  if (wasFavorite !== isFavorite) {
+    state.counts = {
+      ...state.counts,
+      favorites: Math.max(
+        0,
+        Number(state.counts?.favorites || 0) + (isFavorite ? 1 : -1),
+      ),
+    };
+  }
+
+  if (state.filter === "favorites" && !isFavorite) {
+    state.jobs = state.jobs.filter((job) => job.id !== updatedJob.id);
+    state.filteredTotal = Math.max(0, state.filteredTotal - 1);
+  }
+
+  state.totalJobs = totalJobCountFromCounts(state.counts);
+  state.hasMore = state.jobs.length < state.filteredTotal;
+  ensureSelection();
+  writeCurrentJobsToCache();
+  syncGalleryFavoriteMutation(updatedJob.id);
+  render({ galleryMode: "none" });
+}
+
 async function toggleFavorite(job) {
   const shouldFavorite = !job.is_favorite;
-  await mutateJob(`/jobs/${job.id}/favorite`, {
+  const updatedJob = await requestJobMutation(`/jobs/${job.id}/favorite`, {
     method: shouldFavorite ? "POST" : "DELETE",
   });
+  if (updatedJob) {
+    applyFavoriteMutation(updatedJob);
+  }
   setMessage(shouldFavorite ? "Added to favorites." : "Removed from favorites.");
 }
 

@@ -392,6 +392,67 @@ test("favorites tab and heart toggles stay in sync between gallery and detail", 
   await expect(page.locator("#gallery-empty")).toBeVisible();
 });
 
+test("favoriting from the list keeps scroll position and avoids a full list refresh", async ({
+  page,
+}) => {
+  await clearLocalGalleryCache(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  const requestLog = [];
+  const jobs = await mockJobs(page, 55, {
+    onRequest: (request) => {
+      requestLog.push(request);
+    },
+  });
+
+  await page.route("**/jobs/*/favorite", async (route) => {
+    const match = route.request().url().match(/\/jobs\/([^/]+)\/favorite/);
+    const jobId = match?.[1];
+    const job = jobs.find((item) => item.id === jobId);
+    expect(job).toBeTruthy();
+    job.tags = ["favorite"];
+    job.is_favorite = true;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(job),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".gallery-card")).toHaveCount(40);
+  expect(requestLog).toHaveLength(1);
+
+  const targetCard = page.locator(".gallery-card").nth(24);
+  await targetCard.scrollIntoViewIfNeeded();
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+
+  await page.evaluate(() => {
+    window.__favoriteCardRef = document.querySelectorAll(".gallery-card")[24];
+  });
+
+  await targetCard.locator(".favorite-button").click();
+
+  await expect(targetCard.locator(".favorite-button")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: /^Favorites\(1\)$/ })).toBeVisible();
+
+  const scrollAfter = await page.evaluate(() => window.scrollY);
+  expect(Math.abs(scrollAfter - scrollBefore)).toBeLessThan(24);
+  expect(requestLog).toHaveLength(1);
+
+  const cardPreserved = await page.evaluate(() => {
+    const currentCard = document.querySelectorAll(".gallery-card")[24];
+    return (
+      Boolean(window.__favoriteCardRef) &&
+      window.__favoriteCardRef.isConnected &&
+      currentCard === window.__favoriteCardRef
+    );
+  });
+  expect(cardPreserved).toBe(true);
+});
+
 test("copy and rerun creates a fresh queued job and switches to active jobs", async ({
   page,
 }) => {
