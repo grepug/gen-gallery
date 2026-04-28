@@ -588,6 +588,51 @@ class JobStore:
             )
         return recovered_job_ids
 
+    def fail_pending_jobs(
+        self,
+        predicate: Callable[[dict[str, Any]], bool],
+        reason: str,
+    ) -> list[str]:
+        now = utcnow()
+        failed_job_ids: list[str] = []
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM jobs
+                WHERE status IN ('queued', 'retry_waiting', 'running')
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            for row in rows:
+                job = self._decode_row(row)
+                if not predicate(job):
+                    continue
+                failed_job_ids.append(str(job["id"]))
+                connection.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'failed',
+                        assigned_key_name = NULL,
+                        updated_at = ?,
+                        finished_at = ?,
+                        next_retry_at = NULL,
+                        avoid_key_name = NULL,
+                        last_error = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, reason, job["id"]),
+                )
+            connection.execute("COMMIT")
+        for job_id in failed_job_ids:
+            self.append_event(
+                job_id,
+                "job_failed_as_unsupported_shape",
+                {"reason": reason},
+            )
+        return failed_job_ids
+
     def update_input_files(self, job_id: str, input_files: list[dict[str, Any]]) -> None:
         now = utcnow()
         with self.connect() as connection:

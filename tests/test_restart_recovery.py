@@ -129,3 +129,66 @@ class RestartRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(recovered["attempt_count"], 0)
                     start_mock.assert_awaited_once()
                     await app.router.shutdown()
+
+    async def test_app_startup_fails_unsupported_pending_jobs_in_sdk_only_mode(self) -> None:
+        unsupported_job = self.store.create_job(
+            prompt="unsupported startup recovery",
+            image_action="generate",
+            model_override=None,
+            tool_model_override=None,
+            max_retries=2,
+            retry_delay_seconds=60,
+            input_files=[
+                {
+                    "filename": "ref1.png",
+                    "kind": "input",
+                    "size_bytes": 3,
+                }
+            ],
+        )
+        self.store.make_job_dirs(str(unsupported_job["id"]))
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = 'running',
+                    attempt_count = 1,
+                    assigned_key_name = 'sdk-only',
+                    started_at = '2026-04-27T10:00:00+00:00'
+                WHERE id = ?
+                """,
+                (unsupported_job["id"],),
+            )
+
+        env = {
+            "IMAGEGEN_SERVER_HOME": str(self.server_home),
+            "IMAGE_API_KEYS_JSON": """
+            [
+              {
+                "name":"sdk-only",
+                "api_key":"sk-test",
+                "transport":"openai_sdk",
+                "base_url":"https://lingsuan.nmyh.cc/v1",
+                "tool_model":"gpt-image-2",
+                "concurrency":1
+              }
+            ]
+            """,
+            "OPENAI_BASE_URL": "https://api.example.com/v1",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("imagegen_server.app.WorkerPool.start", new_callable=AsyncMock) as start_mock:
+                with patch("imagegen_server.app.WorkerPool.stop", new_callable=AsyncMock):
+                    app = create_app()
+                    await app.router.startup()
+                    failed_job = app.state.store.get_job(str(unsupported_job["id"]))
+                    self.assertEqual(failed_job["status"], "failed")
+                    self.assertEqual(
+                        failed_job["last_error"],
+                        "No configured API key supports this request shape. "
+                        "SDK-backed keys currently require image_action=edit "
+                        "with exactly one reference image.",
+                    )
+                    start_mock.assert_awaited_once()
+                    await app.router.shutdown()

@@ -75,9 +75,19 @@ def create_app() -> FastAPI:
             "with exactly one reference image."
         )
 
+    def fail_unsupported_pending_jobs() -> list[str]:
+        return store.fail_pending_jobs(
+            lambda job: not request_shape_supported(
+                str(job["image_action"]),
+                len(job["input_files"]),
+            ),
+            unsupported_shape_detail(),
+        )
+
     @app.on_event("startup")
     async def on_startup() -> None:
         await asyncio.to_thread(store.requeue_interrupted_jobs)
+        await asyncio.to_thread(fail_unsupported_pending_jobs)
         await worker_pool.start()
 
     @app.on_event("shutdown")
@@ -368,6 +378,7 @@ def create_app() -> FastAPI:
                 imported_shared if imported_shared.is_dir() else None,
             )
             store.initialize()
+            await asyncio.to_thread(fail_unsupported_pending_jobs)
             if worker_was_running:
                 await worker_pool.start()
                 workers_restarted = True
