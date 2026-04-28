@@ -18,7 +18,7 @@ const SORT_OPTIONS = {
   updated_asc: { field: "updated_at", direction: "asc" },
 };
 const DESKTOP_COLUMN_OPTIONS = new Set(["2", "3", "4"]);
-const JOB_LIST_CACHE_KEY_PREFIX = "imagegen-gallery:jobs:v1";
+const JOB_LIST_CACHE_KEY_PREFIX = "imagegen-gallery:jobs:v2";
 const JOB_API_MAX_PAGE_SIZE = 200;
 
 const state = {
@@ -32,6 +32,7 @@ const state = {
     succeeded: 0,
     failed: 0,
     canceled: 0,
+    favorites: 0,
   },
   filter: "succeeded",
   sort: "created_desc",
@@ -74,6 +75,7 @@ const els = {
   detailPlaceholder: document.getElementById("detail-placeholder"),
   detailTitle: document.getElementById("detail-title"),
   detailStatus: document.getElementById("detail-status"),
+  favoriteButton: document.getElementById("favorite-button"),
   detailPromptPreview: document.getElementById("detail-prompt-preview"),
   detailPromptFull: document.getElementById("detail-prompt-full"),
   detailPromptScroll: document.getElementById("detail-prompt-scroll"),
@@ -162,7 +164,19 @@ function jobCounts() {
     failed: counts.failed || 0,
     succeeded: counts.succeeded || 0,
     canceled: counts.canceled || 0,
+    favorites: counts.favorites || 0,
   };
+}
+
+function totalJobCountFromCounts(counts) {
+  return (
+    (counts.queued || 0) +
+    (counts.running || 0) +
+    (counts.retry_waiting || 0) +
+    (counts.succeeded || 0) +
+    (counts.failed || 0) +
+    (counts.canceled || 0)
+  );
 }
 
 function filteredJobs() {
@@ -222,10 +236,7 @@ function hydrateJobsFromCache() {
   state.jobs = cached.items;
   state.filteredTotal = Number(cached.total || 0);
   state.counts = cached.counts || state.counts;
-  state.totalJobs = Object.values(state.counts).reduce(
-    (sum, value) => sum + Number(value || 0),
-    0,
-  );
+  state.totalJobs = totalJobCountFromCounts(state.counts);
   state.hasMore = state.jobs.length < state.filteredTotal;
   state.selectedId = null;
   state.modalOpen = false;
@@ -243,6 +254,7 @@ function syncDesktopColumnCount() {
 function filterLabelText() {
   if (state.filter === "all") return "all jobs";
   if (state.filter === "active") return "active jobs";
+  if (state.filter === "favorites") return "favorite jobs";
   return `${state.filter} jobs`;
 }
 
@@ -445,12 +457,62 @@ function scheduleGalleryMasonry() {
   state.galleryLayoutRaf = window.requestAnimationFrame(syncGalleryMasonry);
 }
 
+function canFavorite(job) {
+  return job.status === "succeeded";
+}
+
+function favoriteButtonText(job) {
+  return job.is_favorite ? "♥" : "♡";
+}
+
+function favoriteButtonLabel(job) {
+  return job.is_favorite ? "Remove from favorites" : "Add to favorites";
+}
+
+async function toggleFavorite(job) {
+  const shouldFavorite = !job.is_favorite;
+  await mutateJob(`/jobs/${job.id}/favorite`, {
+    method: shouldFavorite ? "POST" : "DELETE",
+  });
+  setMessage(shouldFavorite ? "Added to favorites." : "Removed from favorites.");
+}
+
+function createFavoriteButton(job, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `ghost-button favorite-button${compact ? " favorite-button--card" : ""}${job.is_favorite ? " is-active" : ""}`;
+  button.textContent = favoriteButtonText(job);
+  button.setAttribute("aria-label", favoriteButtonLabel(job));
+  button.setAttribute("aria-pressed", job.is_favorite ? "true" : "false");
+  button.title = favoriteButtonLabel(job);
+  button.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      await toggleFavorite(job);
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
+  return button;
+}
+
 function createGalleryCard(job) {
-  const card = document.createElement("button");
-  card.type = "button";
+  const card = document.createElement("article");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
   card.dataset.jobId = job.id;
   card.className = `gallery-card ${job.id === state.selectedId ? "is-selected" : ""}`;
-  card.addEventListener("click", () => openModal(job.id));
+  card.addEventListener("click", (event) => {
+    if (event.target.closest(".favorite-button")) return;
+    openModal(job.id);
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.target.closest(".favorite-button")) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    openModal(job.id);
+  });
 
   const file = outputFile(job);
   if (file) {
@@ -487,10 +549,17 @@ function createGalleryCard(job) {
   topline.className = "card-topline";
   topline.innerHTML = `<p class="card-title">${formatTimestamp(job.created_at)}</p>`;
 
+  const toplineActions = document.createElement("div");
+  toplineActions.className = "card-topline-actions";
+
   const status = document.createElement("span");
   status.className = `status-pill ${statusClass(job.status)}`;
   status.textContent = job.status.replace("_", " ");
-  topline.appendChild(status);
+  toplineActions.appendChild(status);
+  if (canFavorite(job)) {
+    toplineActions.appendChild(createFavoriteButton(job, { compact: true }));
+  }
+  topline.appendChild(toplineActions);
 
   const prompt = document.createElement("p");
   prompt.className = "card-prompt";
@@ -826,6 +895,13 @@ function renderDetail() {
     els.detailPromptToggle.classList.add("hidden");
     els.detailReference.classList.add("hidden");
     els.metaGrid.innerHTML = "";
+    els.favoriteButton.classList.add("hidden");
+    els.favoriteButton.classList.remove("is-active");
+    els.favoriteButton.textContent = "";
+    els.favoriteButton.removeAttribute("aria-pressed");
+    els.favoriteButton.removeAttribute("aria-label");
+    els.favoriteButton.title = "";
+    els.favoriteButton.onclick = null;
     els.duplicateButton.classList.add("hidden");
     els.retryButton.classList.add("hidden");
     els.cancelButton.classList.add("hidden");
@@ -872,6 +948,33 @@ function renderDetail() {
   renderPrompt(selectedJob);
   renderReference(selectedJob);
   renderMeta(selectedJob);
+  const canToggleFavorite = canFavorite(selectedJob);
+  els.favoriteButton.classList.toggle("hidden", !canToggleFavorite);
+  if (canToggleFavorite) {
+    els.favoriteButton.classList.toggle(
+      "is-active",
+      Boolean(selectedJob.is_favorite),
+    );
+    els.favoriteButton.textContent = favoriteButtonText(selectedJob);
+    els.favoriteButton.setAttribute(
+      "aria-pressed",
+      selectedJob.is_favorite ? "true" : "false",
+    );
+    els.favoriteButton.setAttribute(
+      "aria-label",
+      favoriteButtonLabel(selectedJob),
+    );
+    els.favoriteButton.title = favoriteButtonLabel(selectedJob);
+    els.favoriteButton.onclick = async () => {
+      try {
+        await toggleFavorite(selectedJob);
+      } catch (error) {
+        setMessage(error.message);
+      }
+    };
+  } else {
+    els.favoriteButton.onclick = null;
+  }
 
   const canRetry =
     selectedJob.status === "failed" || selectedJob.status === "canceled";
@@ -1085,10 +1188,7 @@ async function fetchJobs({ reset = true, preserveSelection = false } = {}) {
     state.jobs = reset ? nextItems : [...state.jobs, ...nextItems];
     state.filteredTotal = payload.total;
     state.counts = payload.counts || state.counts;
-    state.totalJobs = Object.values(state.counts).reduce(
-      (sum, value) => sum + Number(value || 0),
-      0,
-    );
+    state.totalJobs = totalJobCountFromCounts(state.counts);
     state.hasMore = state.jobs.length < state.filteredTotal;
     if (preferredSelectedId) {
       state.selectedId = preferredSelectedId;
