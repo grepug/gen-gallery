@@ -20,11 +20,23 @@ class WorkerContext:
 
 def key_supports_job(key_config: ApiKeyConfig, job: dict) -> bool:
     reference_count = len(job.get("input_files") or [])
+    return key_supports_request(
+        key_config,
+        str(job.get("image_action") or "generate"),
+        reference_count,
+    )
+
+
+def key_supports_request(
+    key_config: ApiKeyConfig,
+    image_action: str,
+    reference_count: int,
+) -> bool:
     if key_config.transport != "openai_sdk":
         return True
     if reference_count == 0:
         return True
-    return job.get("image_action") == "edit" and reference_count == 1
+    return image_action == "edit" and reference_count == 1
 
 
 class WorkerPool:

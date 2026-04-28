@@ -34,7 +34,7 @@ from .schemas import (
     JobResponse,
 )
 from .storage import JobStore, job_to_response
-from .worker import WorkerPool
+from .worker import WorkerPool, key_supports_request
 
 
 def create_app() -> FastAPI:
@@ -126,6 +126,23 @@ def create_app() -> FastAPI:
                 }
             )
             await upload.close()
+
+        if not any(
+            key_supports_request(
+                key_config,
+                image_action,
+                len(uploaded_files),
+            )
+            for key_config in settings.api_keys
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No configured API key supports this request shape. "
+                    "SDK-backed keys currently require image_action=edit "
+                    "with exactly one reference image."
+                ),
+            )
 
         job_id = str(uuid.uuid4())
         store.make_job_dirs(job_id)

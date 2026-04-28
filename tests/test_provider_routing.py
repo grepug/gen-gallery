@@ -5,10 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
 from PIL import Image
 
+from imagegen_server.app import create_app
 from imagegen_server.config import load_settings
 from imagegen_server.errors import ImageGenerationError
 from imagegen_server.openai_client import (
@@ -17,7 +20,7 @@ from imagegen_server.openai_client import (
     generate_image_via_openai_sdk,
 )
 from imagegen_server.storage import JobStore
-from imagegen_server.worker import key_supports_job
+from imagegen_server.worker import key_supports_job, key_supports_request
 
 
 class ProviderRoutingTests(unittest.TestCase):
@@ -233,6 +236,77 @@ class ProviderRoutingTests(unittest.TestCase):
         self.assertEqual(result, expected)
         sdk_mock.assert_called_once()
         raw_mock.assert_not_called()
+
+    def test_key_supports_request_restricts_sdk_reference_jobs(self) -> None:
+        sdk_key = SimpleNamespace(transport="openai_sdk")
+        legacy_key = SimpleNamespace(transport="responses_http")
+
+        self.assertTrue(key_supports_request(sdk_key, "generate", 0))
+        self.assertTrue(key_supports_request(sdk_key, "edit", 1))
+        self.assertFalse(key_supports_request(sdk_key, "generate", 1))
+        self.assertFalse(key_supports_request(sdk_key, "auto", 1))
+        self.assertFalse(key_supports_request(sdk_key, "edit", 2))
+        self.assertTrue(key_supports_request(legacy_key, "generate", 2))
+
+    def test_create_job_rejects_request_shapes_unsupported_by_all_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = {
+                "IMAGEGEN_SERVER_HOME": temp_dir,
+                "IMAGE_API_KEYS_JSON": """
+                [
+                  {
+                    "name":"sdk-c",
+                    "api_key":"sk-c",
+                    "transport":"openai_sdk",
+                    "base_url":"https://lingsuan.nmyh.cc/v1",
+                    "tool_model":"gpt-image-2",
+                    "concurrency":5
+                  }
+                ]
+                """,
+                "OPENAI_BASE_URL": "https://api.example.com/v1",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                with patch(
+                    "imagegen_server.app.WorkerPool.start",
+                    new_callable=AsyncMock,
+                ):
+                    with patch(
+                        "imagegen_server.app.WorkerPool.stop",
+                        new_callable=AsyncMock,
+                    ):
+                        app = create_app()
+                        client = TestClient(app)
+                        first_ref = ("reference_images", ("ref1.png", b"png", "image/png"))
+                        second_ref = ("reference_images", ("ref2.png", b"png", "image/png"))
+
+                        generate_response = client.post(
+                            "/jobs",
+                            data={
+                                "prompt": "hello",
+                                "image_action": "generate",
+                            },
+                            files=[first_ref],
+                        )
+                        multi_edit_response = client.post(
+                            "/jobs",
+                            data={
+                                "prompt": "hello",
+                                "image_action": "edit",
+                            },
+                            files=[first_ref, second_ref],
+                        )
+
+        self.assertEqual(generate_response.status_code, 400)
+        self.assertIn(
+            "No configured API key supports this request shape",
+            generate_response.json()["detail"],
+        )
+        self.assertEqual(multi_edit_response.status_code, 400)
+        self.assertIn(
+            "exactly one reference image",
+            multi_edit_response.json()["detail"],
+        )
 
     def test_sdk_transport_uses_images_generate_for_generate_jobs(self) -> None:
         fake_response = SimpleNamespace(
