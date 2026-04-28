@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from .schemas import JobResponse
 
@@ -390,6 +390,7 @@ class JobStore:
         key_name: str,
         key_order: list[str],
         key_capacities: dict[str, int],
+        supports_job: Optional[Callable[[dict[str, Any]], bool]] = None,
     ) -> Optional[dict[str, Any]]:
         now = utcnow()
         with self.connect() as connection:
@@ -443,6 +444,7 @@ class JobStore:
                 key_name=key_name,
                 now=now,
                 allow_avoided_fallback=allow_avoided_fallback,
+                supports_job=supports_job,
             )
             if row is None:
                 connection.execute("COMMIT")
@@ -949,8 +951,9 @@ class JobStore:
         key_name: str,
         now: str,
         allow_avoided_fallback: bool,
+        supports_job: Optional[Callable[[dict[str, Any]], bool]],
     ) -> Optional[sqlite3.Row]:
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT *
             FROM jobs
@@ -960,15 +963,15 @@ class JobStore:
                   )
               AND (avoid_key_name IS NULL OR avoid_key_name != ?)
             ORDER BY created_at ASC
-            LIMIT 1
             """,
             (now, key_name),
-        ).fetchone()
+        ).fetchall()
+        row = self._first_supported_row(rows, supports_job)
         if row is not None:
             return row
         if not allow_avoided_fallback:
             return None
-        return connection.execute(
+        fallback_rows = connection.execute(
             """
             SELECT *
             FROM jobs
@@ -977,10 +980,22 @@ class JobStore:
               AND next_retry_at <= ?
               AND avoid_key_name = ?
             ORDER BY created_at ASC
-            LIMIT 1
             """,
             (now, key_name),
-        ).fetchone()
+        ).fetchall()
+        return self._first_supported_row(fallback_rows, supports_job)
+
+    def _first_supported_row(
+        self,
+        rows: list[sqlite3.Row],
+        supports_job: Optional[Callable[[dict[str, Any]], bool]],
+    ) -> Optional[sqlite3.Row]:
+        if supports_job is None:
+            return rows[0] if rows else None
+        for row in rows:
+            if supports_job(self._decode_row(row)):
+                return row
+        return None
 
 
 def job_to_response(job: dict[str, Any], base_url: str) -> JobResponse:

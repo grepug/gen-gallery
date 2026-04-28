@@ -18,6 +18,15 @@ class WorkerContext:
     store: JobStore
 
 
+def key_supports_job(key_config: ApiKeyConfig, job: dict) -> bool:
+    reference_count = len(job.get("input_files") or [])
+    if key_config.transport != "openai_sdk":
+        return True
+    if reference_count == 0:
+        return True
+    return job.get("image_action") == "edit" and reference_count == 1
+
+
 class WorkerPool:
     def __init__(self, settings: Settings, store: JobStore) -> None:
         self.settings = settings
@@ -64,6 +73,7 @@ class WorkerPool:
                 context.key_config.name,
                 self._key_order,
                 self._key_capacities,
+                lambda job: key_supports_job(context.key_config, job),
             )
             if job is None:
                 await asyncio.sleep(context.settings.poll_interval_seconds)

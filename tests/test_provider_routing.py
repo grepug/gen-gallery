@@ -17,6 +17,7 @@ from imagegen_server.openai_client import (
     generate_image_via_openai_sdk,
 )
 from imagegen_server.storage import JobStore
+from imagegen_server.worker import key_supports_job
 
 
 class ProviderRoutingTests(unittest.TestCase):
@@ -125,6 +126,86 @@ class ProviderRoutingTests(unittest.TestCase):
                 for job_id in created_job_ids[:3]
             }
             self.assertEqual(running_assignments, {"legacy-a", "sdk-c"})
+
+    def test_claim_next_job_skips_sdk_incompatible_reference_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server_home = Path(temp_dir)
+            jobs_dir = server_home / "jobs"
+            store = JobStore(server_home / "app.db", jobs_dir)
+            store.initialize()
+
+            unsupported_sdk_job = store.create_job(
+                prompt="multi-reference edit",
+                image_action="edit",
+                model_override=None,
+                tool_model_override=None,
+                max_retries=0,
+                retry_delay_seconds=60,
+                input_files=[
+                    {"filename": "ref-a.png", "kind": "input", "size_bytes": 1},
+                    {"filename": "ref-b.png", "kind": "input", "size_bytes": 1},
+                ],
+            )
+            sdk_supported_job = store.create_job(
+                prompt="plain generate",
+                image_action="generate",
+                model_override=None,
+                tool_model_override=None,
+                max_retries=0,
+                retry_delay_seconds=60,
+                input_files=[],
+            )
+            legacy_only_job = store.create_job(
+                prompt="generate with reference",
+                image_action="generate",
+                model_override=None,
+                tool_model_override=None,
+                max_retries=0,
+                retry_delay_seconds=60,
+                input_files=[
+                    {"filename": "ref-a.png", "kind": "input", "size_bytes": 1},
+                ],
+            )
+
+            key_order = ["sdk-c", "legacy-a"]
+            key_capacities = {"sdk-c": 1, "legacy-a": 2}
+            sdk_key = SimpleNamespace(transport="openai_sdk")
+            legacy_key = SimpleNamespace(transport="responses_http")
+
+            sdk_job = store.claim_next_job(
+                "sdk-c",
+                key_order,
+                key_capacities,
+                lambda job: key_supports_job(sdk_key, job),
+            )
+            self.assertIsNotNone(sdk_job)
+            self.assertEqual(str(sdk_job["id"]), str(sdk_supported_job["id"]))
+
+            legacy_job = store.claim_next_job(
+                "legacy-a",
+                key_order,
+                key_capacities,
+                lambda job: key_supports_job(legacy_key, job),
+            )
+            self.assertIsNotNone(legacy_job)
+            self.assertEqual(str(legacy_job["id"]), str(unsupported_sdk_job["id"]))
+
+            retry_sdk_job = store.claim_next_job(
+                "sdk-c",
+                key_order,
+                key_capacities,
+                lambda job: key_supports_job(sdk_key, job),
+            )
+            self.assertIsNone(retry_sdk_job)
+
+            second_legacy_job = store.claim_next_job(
+                "legacy-a",
+                key_order,
+                key_capacities,
+                lambda job: key_supports_job(legacy_key, job),
+            )
+            self.assertIsNotNone(second_legacy_job)
+            self.assertEqual(str(second_legacy_job["id"]), str(legacy_only_job["id"]))
 
     def test_generate_image_routes_by_transport(self) -> None:
         expected = OpenAIImageResult(image_bytes=b"png", seen_events=["done"])
@@ -323,6 +404,40 @@ class ProviderRoutingTests(unittest.TestCase):
                     )
 
         self.assertIn("exactly one reference image", str(captured.exception))
+        self.assertFalse(captured.exception.retryable)
+
+    def test_sdk_transport_rejects_reference_images_without_edit_action(self) -> None:
+        fake_client = SimpleNamespace(
+            images=SimpleNamespace(
+                generate=lambda **kwargs: SimpleNamespace(
+                    data=[SimpleNamespace(b64_json="cG5n")]
+                ),
+            ),
+            _client=SimpleNamespace(
+                build_request=lambda *args, **kwargs: kwargs,
+                send=lambda request: request,
+            ),
+            base_url="https://lingsuan.nmyh.cc/v1/",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference_path = Path(temp_dir) / "first.png"
+            Image.new("RGBA", (400, 400), (255, 255, 255, 255)).save(reference_path)
+
+            with patch("imagegen_server.openai_client.OpenAI", return_value=fake_client):
+                with self.assertRaises(ImageGenerationError) as captured:
+                    generate_image_via_openai_sdk(
+                        base_url="https://lingsuan.nmyh.cc/v1",
+                        api_key="sk-test",
+                        model="gpt-5.5",
+                        tool_model="gpt-image-2",
+                        image_action="generate",
+                        prompt="hello",
+                        reference_images=[reference_path],
+                        timeout_seconds=60,
+                    )
+
+        self.assertIn("require image_action=edit", str(captured.exception))
         self.assertFalse(captured.exception.retryable)
 
 

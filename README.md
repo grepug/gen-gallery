@@ -54,7 +54,7 @@ Optional per-key fields:
 SDK-backed reference-image edits currently use a provider-specific preprocessing path:
 
 - only the `openai_sdk` transport uses it
-- the current contract supports exactly one uploaded reference image
+- the current contract supports exactly one uploaded reference image with `image_action=edit`
 - the server converts that image into a square `1024x1024` PNG and sends an explicit mask
 - this path is validated against `https://lingsuan.nmyh.cc/v1`
 - other SDK-compatible upstreams may need different edit shaping

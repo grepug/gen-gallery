@@ -338,7 +338,12 @@ def generate_image_via_openai_sdk(
             timeout=timeout_seconds,
         )
         sdk_model = tool_model or model
-        uses_edit_path = bool(reference_images) or image_action == "edit"
+        if reference_images and image_action != "edit":
+            raise ImageGenerationError(
+                "SDK-backed reference-image requests currently require image_action=edit.",
+                retryable=False,
+            )
+        uses_edit_path = image_action == "edit"
         if uses_edit_path:
             if not reference_images:
                 raise ImageGenerationError(
