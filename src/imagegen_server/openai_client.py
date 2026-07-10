@@ -29,6 +29,59 @@ class ImageGenerationError(RuntimeError):
         self.immediate_retry_on_other_key = immediate_retry_on_other_key
 
 
+def extract_image_payload(response: dict) -> bytes | str:
+    """Extract the first base64 image or URL from an images API response."""
+    data = response.get("data")
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict) and first.get("b64_json"):
+            try:
+                return base64.b64decode(first["b64_json"], validate=True)
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("Invalid base64 image payload") from exc
+        if isinstance(first, dict) and first.get("url"):
+            return str(first["url"])
+    raise RuntimeError("No image payload found in response.")
+
+
+def generate_image_via_images_api(
+    *, base_url: str, api_key: str, model: str, prompt: str, timeout_seconds: int
+) -> bytes:
+    """Use the legacy images endpoint used by some OpenAI-compatible proxies."""
+    payload = {"model": model, "prompt": prompt, "response_format": "b64_json"}
+    request = urllib.request.Request(
+        base_url + "/images/generations",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            payload = extract_image_payload(json.loads(response.read()))
+            if isinstance(payload, bytes):
+                return payload
+            with urllib.request.urlopen(payload, timeout=timeout_seconds) as image_response:
+                return image_response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise ImageGenerationError(
+            f"Images request failed with HTTP {exc.code}: {body}",
+            retryable=exc.code >= 500 or exc.code in {401, 403, 429},
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise ImageGenerationError(
+            f"Network error during images generation: {exc}", retryable=True
+        ) from exc
+    except (json.JSONDecodeError, RuntimeError) as exc:
+        raise ImageGenerationError(
+            f"Images response did not contain an image: {exc}", retryable=False
+        ) from exc
+
+
 def summarize_stream_error(event: dict) -> str:
     error = event.get("error")
     if isinstance(error, dict):
@@ -194,12 +247,23 @@ def generate_image(
         ) from exc
 
     if not result_b64:
-        message = "No image payload found in SSE stream."
-        if stream_error:
-            message += f" Upstream error: {stream_error}."
-        if seen_events:
-            message += " Seen events: " + ", ".join(seen_events[:30])
-        raise ImageGenerationError(message, retryable=True)
+        try:
+            image_bytes = generate_image_via_images_api(
+                base_url=base_url,
+                api_key=api_key,
+                model=tool_model,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+            return OpenAIImageResult(image_bytes=image_bytes, seen_events=seen_events)
+        except ImageGenerationError as fallback_error:
+            message = "No image payload found in SSE stream."
+            if stream_error:
+                message += f" Upstream error: {stream_error}."
+            if seen_events:
+                message += " Seen events: " + ", ".join(seen_events[:30])
+            message += f" Images API fallback failed: {fallback_error}."
+            raise ImageGenerationError(message, retryable=fallback_error.retryable) from fallback_error
 
     return OpenAIImageResult(
         image_bytes=base64.b64decode(result_b64),

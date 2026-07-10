@@ -1,0 +1,4 @@
+interface:
+  display_name: "My Image Gen"
+  short_description: "Generate and save images locally"
+  default_prompt: "Use $my-image-gen to generate an image from this prompt: "
